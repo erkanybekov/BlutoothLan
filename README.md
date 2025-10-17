@@ -1,7 +1,10 @@
 # BlutoothLan
 
 Мини-проект на Swift, реализующий обмен данными между устройствами через Bluetooth (BLE) в стиле локальной сети.
+---
 
+# Структура проекта
+```
 BlutootthLan.xcodeproj
 └── BlutootthLan
     ├── Assets.xcassets
@@ -12,7 +15,7 @@ BlutootthLan.xcodeproj
     ├── BlutootthLanApp.swift
     ├── Info.plist
     └── README.md
----
+```
 
 ## 🏗 AVR - Approximate Visual Representation
 
