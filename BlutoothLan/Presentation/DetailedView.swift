@@ -26,12 +26,12 @@ struct DetailedView: View {
 
     private var basicsSection: some View {
         Section {
-            LabeledContent("Name", value: item.name)
-            LabeledContent("Identifier", value: item.peripheral.identifier.uuidString)
-            LabeledContent("Last RSSI", value: "\(item.rssi)")
-            LabeledContent("Last Seen", value: dateFormatter.string(from: item.lastSeen))
+            ValueRow("Name", value: item.name)
+            ValueRow("Identifier", value: item.peripheral.identifier.uuidString)
+            ValueRow("Last RSSI", value: "\(item.rssi)")
+            ValueRow("Last Seen", value: dateFormatter.string(from: item.lastSeen))
             if let connectable = item.isConnectable {
-                LabeledContent("Connectable", value: connectable ? "Yes" : "No")
+                ValueRow("Connectable", value: connectable ? "Yes" : "No")
             }
         } header: {
             Text("Device")
@@ -45,10 +45,10 @@ struct DetailedView: View {
     private var advertisementSection: some View {
         Section {
             if let localName = item.advertisementData[CBAdvertisementDataLocalNameKey] as? String {
-                LabeledContent("Local Name", value: localName)
+                ValueRow("Local Name", value: localName)
             }
             if let tx = item.advertisementData[CBAdvertisementDataTxPowerLevelKey] as? NSNumber {
-                LabeledContent("Tx Power", value: "\(tx)")
+                ValueRow("Tx Power", value: "\(tx)")
             }
             if let uuids = item.advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID], !uuids.isEmpty {
                 keyValueList(title: "Service UUIDs", values: uuids.map { $0.uuidString })
@@ -60,7 +60,7 @@ struct DetailedView: View {
                 keyValueList(title: "Solicited UUIDs", values: solicited.map { $0.uuidString })
             }
             if let mfg = item.advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, !mfg.isEmpty {
-                LabeledContent("Manufacturer Data", value: mfg.hexString(spaced: true))
+                ValueRow("Manufacturer Data", value: mfg.hexString(spaced: true), monospaced: true)
             }
             if let serviceData = item.advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data], !serviceData.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -75,6 +75,7 @@ struct DetailedView: View {
                             Text(entry.value.hexString(spaced: true))
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
                         }
                     }
                 }
@@ -87,7 +88,7 @@ struct DetailedView: View {
     private var rawAdvertisementSection: some View {
         Section {
             ForEach(remainingAdvertisementPairs(), id: \.key) { pair in
-                LabeledContent(pair.key, value: pair.value)
+                ValueRow(pair.key, value: pair.value, monospaced: true)
             }
         } header: {
             Text("Raw Advertisement")
@@ -155,18 +156,30 @@ struct DetailedView: View {
     }
 }
 
-// MARK: - Utilities
+// MARK: - iOS 15-friendly labeled row
 
-private extension Data {
-    func hexString(spaced: Bool = false) -> String {
-        let hex = self.map { String(format: "%02X", $0) }.joined()
-        if spaced {
-            return stride(from: 0, to: hex.count, by: 2).map { idx in
-                let start = hex.index(hex.startIndex, offsetBy: idx)
-                let end = hex.index(start, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
-                return String(hex[start..<end])
-            }.joined(separator: " ")
+private struct ValueRow: View {
+    let title: String
+    let value: String
+    var monospaced: Bool = false
+
+    init(_ title: String, value: String, monospaced: Bool = false) {
+        self.title = title
+        self.value = value
+        self.monospaced = monospaced
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(monospaced ? .callout.monospaced() : .callout)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.trailing)
         }
-        return hex
+        .contentShape(Rectangle())
     }
 }
