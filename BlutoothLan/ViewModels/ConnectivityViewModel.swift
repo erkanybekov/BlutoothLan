@@ -41,10 +41,12 @@ final class ConnectivityViewModel: ObservableObject {
     }
 
     private func bind() {
+        // Bluetooth state
         bluetoothService.statePublisher
             .receive(on: DispatchQueue.main)
             .assign(to: &$bluetoothState)
 
+        // Bluetooth discovered peripherals + save to Core Data
         bluetoothService.peripheralsPublisher
             .receive(on: DispatchQueue.main)
             .handleEvents(receiveOutput: { [weak self] peripherals in
@@ -57,10 +59,12 @@ final class ConnectivityViewModel: ObservableObject {
             })
             .assign(to: &$discoveredPeripherals)
 
+        // Bluetooth scanning flag
         bluetoothService.isScanningPublisher
             .receive(on: DispatchQueue.main)
             .assign(to: &$isScanningBluetooth)
 
+        // Bonjour peers + save to Core Data
         bonjourService.peersPublisher
             .receive(on: DispatchQueue.main)
             .handleEvents(receiveOutput: { [weak self] peers in
@@ -73,10 +77,12 @@ final class ConnectivityViewModel: ObservableObject {
             })
             .assign(to: &$lanPeers)
 
+        // Bonjour status
         bonjourService.statusPublisher
             .receive(on: DispatchQueue.main)
             .assign(to: &$lanStatusMessage)
 
+        // Bonjour flags
         bonjourService.isBrowsingPublisher
             .receive(on: DispatchQueue.main)
             .assign(to: &$isBrowsingLAN)

@@ -42,37 +42,12 @@ final class HistoryViewModel: ObservableObject {
     }
 
     func reload() async {
-        var predicates: [NSPredicate] = []
-
-        switch filterType {
-        case .all:
-            break
-        case .bluetooth:
-            predicates.append(NSPredicate(format: "type == %d", DeviceType.bluetooth.rawValue))
-        case .lan:
-            predicates.append(NSPredicate(format: "type == %d", DeviceType.lan.rawValue))
-        }
-
-        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let q = searchText
-            predicates.append(NSPredicate(format: "name CONTAINS[cd] %@ OR id CONTAINS[cd] %@ OR ip CONTAINS[cd] %@", q, q, q))
-        }
-
-        if let from = dateFrom {
-            predicates.append(NSPredicate(format: "lastSeen >= %@", from as NSDate))
-        }
-        if let to = dateTo {
-            predicates.append(NSPredicate(format: "lastSeen <= %@", to as NSDate))
-        }
-
-        let predicate = predicates.isEmpty ? nil : NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
         let sort = [NSSortDescriptor(key: "lastSeen", ascending: false)]
-
         do {
-            let result = try await persistence.fetchDevices(predicate: predicate, sort: sort, limit: nil)
+            let result = try await persistence.fetchDevices(predicate: nil, sort: sort, limit: nil)
             await MainActor.run { self.items = result }
         } catch {
-            // В продакшене: логировать/показать ошибку
+            // В продакшене можно добавить обработку ошибки/логирование
         }
     }
 }

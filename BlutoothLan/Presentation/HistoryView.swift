@@ -12,8 +12,6 @@ struct HistoryView: View {
 
     var body: some View {
         List {
-            filtersSection
-
             Section(header: Text("Devices")) {
                 if viewModel.items.isEmpty {
                     VStack(alignment: .center, spacing: 8) {
@@ -71,57 +69,10 @@ struct HistoryView: View {
         }
     }
 
-    private var filtersSection: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 8) {
-                Picker("Type", selection: $viewModel.filterType) {
-                    ForEach(HistoryFilterType.allCases) { t in
-                        Text(t.rawValue).tag(t)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                if #available(iOS 15.0, *) {
-                    TextField("Search name, id or IP", text: $viewModel.searchText)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    // iOS 14 fallback (если вдруг)
-                    Text("Search requires iOS 15")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack {
-                    // Преобразуем Binding<Date?> -> Binding<Date> с дефолтным значением
-                    DatePicker("From",
-                               selection: Binding($viewModel.dateFrom, replacingNilWith: Date()),
-                               displayedComponents: .date)
-                    DatePicker("To",
-                               selection: Binding($viewModel.dateTo, replacingNilWith: Date()),
-                               displayedComponents: .date)
-                }
-                .labelsHidden()
-            }
-        } header: {
-            Text("Filters")
-        }
-    }
-
     private static let dateFormatter: DateFormatter = {
         let df = DateFormatter()
         df.dateStyle = .short
         df.timeStyle = .short
         return df
     }()
-}
-
-// MARK: - Helpers for optional Date binding
-
-private extension Binding where Value == Date {
-    init(_ source: Binding<Date?>, replacingNilWith defaultValue: Date) {
-        self.init(
-            get: { source.wrappedValue ?? defaultValue },
-            set: { newValue in source.wrappedValue = newValue }
-        )
-    }
 }

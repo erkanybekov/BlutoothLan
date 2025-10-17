@@ -10,7 +10,7 @@ import Combine
 import UIKit
 
 final class BonjourService: NSObject {
-    private let serviceType = "_blutoothlan._tcp." // обязательно с точкой
+    private let serviceType = "_blutoothlan._tcp."
     private var browser: NetServiceBrowser?
     private var advertiser: NetService?
     private var resolvingServices: Set<NetService> = []
