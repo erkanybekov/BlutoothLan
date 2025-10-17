@@ -12,7 +12,6 @@ BlutootthLan.xcodeproj
     ├── BlutootthLanApp.swift
     ├── Info.plist
     └── README.md
-
 ---
 
 ## 🏗 AVR - Approximate Visual Representation
