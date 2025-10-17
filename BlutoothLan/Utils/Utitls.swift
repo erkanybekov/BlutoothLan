@@ -5,10 +5,11 @@
 //  Created by Erlan Kanybekov on 10/17/25.
 //
 
-
+import SwiftUI
+import CoreBluetooth
 // MARK: - Utilities
 
-private extension Data {
+extension Data {
     func hexString(spaced: Bool = false) -> String {
         let hex = self.map { String(format: "%02X", $0) }.joined()
         if spaced {

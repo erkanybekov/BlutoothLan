@@ -5,6 +5,9 @@
 //  Created by Erlan Kanybekov on 10/17/25.
 //
 
+import CoreBluetooth
+
+
 
 // MARK: - LAN Models
 

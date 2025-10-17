@@ -10,8 +10,6 @@ import SwiftData
 import CoreBluetooth
 import Combine
 
-// MARK: - UI
-
 enum ConnectivityTab: String, CaseIterable, Identifiable {
     case bluetooth = "Bluetooth"
     case lan = "LAN"
