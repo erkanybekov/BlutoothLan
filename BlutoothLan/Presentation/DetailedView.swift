@@ -9,16 +9,59 @@ import SwiftUI
 import CoreBluetooth
 
 struct DetailedView: View {
-    let item: DiscoveredPeripheral
+    // Unified source used by the view, can be built from live scan or persisted entity.
+    private let source: DetailSource
+
+    // Keep existing initializer for live scans
+    init(item: DiscoveredPeripheral) {
+        self.source = DetailSource(
+            name: item.name,
+            identifier: item.peripheral.identifier.uuidString,
+            rssi: item.rssi.intValue,
+            lastSeen: item.lastSeen,
+            advertisementData: item.advertisementData,
+            isConnectable: item.isConnectable
+        )
+    }
+
+    // New initializer for persisted history
+    init(entity: DeviceEntity) {
+        let name = (entity.name?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+        let identifier = entity.id ?? "—"
+        let rssiValue = (entity.rssi != 0) ? Int(entity.rssi) : nil
+        let lastSeen = entity.lastSeen
+
+        // Simple path: no decoded advertisement data (we can extend later if needed)
+        self.source = DetailSource(
+            name: name ?? identifier,
+            identifier: identifier,
+            rssi: rssiValue,
+            lastSeen: lastSeen,
+            advertisementData: [:],
+            isConnectable: nil
+        )
+    }
 
     var body: some View {
         List {
             basicsSection
-            advertisementSection
-            rawAdvertisementSection
+
+            if hasAnyAdvertisementContent {
+                advertisementSection
+                rawAdvertisementSection
+            } else {
+                // Optional: show a small hint that no advertisement details are available
+                Section {
+                    Text("No saved advertisement details for this device.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Advertisement")
+                }
+            }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle(item.name)
+        .navigationTitle(source.name)
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -26,11 +69,15 @@ struct DetailedView: View {
 
     private var basicsSection: some View {
         Section {
-            ValueRow("Name", value: item.name)
-            ValueRow("Identifier", value: item.peripheral.identifier.uuidString)
-            ValueRow("Last RSSI", value: "\(item.rssi)")
-            ValueRow("Last Seen", value: dateFormatter.string(from: item.lastSeen))
-            if let connectable = item.isConnectable {
+            ValueRow("Name", value: source.name)
+            ValueRow("Identifier", value: source.identifier, monospaced: true)
+            if let rssi = source.rssi {
+                ValueRow("Last RSSI", value: "\(rssi)")
+            }
+            if let lastSeen = source.lastSeen {
+                ValueRow("Last Seen", value: dateFormatter.string(from: lastSeen))
+            }
+            if let connectable = source.isConnectable {
                 ValueRow("Connectable", value: connectable ? "Yes" : "No")
             }
         } header: {
@@ -44,25 +91,25 @@ struct DetailedView: View {
 
     private var advertisementSection: some View {
         Section {
-            if let localName = item.advertisementData[CBAdvertisementDataLocalNameKey] as? String {
+            if let localName = source.advertisementData[CBAdvertisementDataLocalNameKey] as? String, !localName.isEmpty {
                 ValueRow("Local Name", value: localName)
             }
-            if let tx = item.advertisementData[CBAdvertisementDataTxPowerLevelKey] as? NSNumber {
+            if let tx = source.advertisementData[CBAdvertisementDataTxPowerLevelKey] as? NSNumber {
                 ValueRow("Tx Power", value: "\(tx)")
             }
-            if let uuids = item.advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID], !uuids.isEmpty {
+            if let uuids = source.advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID], !uuids.isEmpty {
                 keyValueList(title: "Service UUIDs", values: uuids.map { $0.uuidString })
             }
-            if let overflow = item.advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID], !overflow.isEmpty {
+            if let overflow = source.advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID], !overflow.isEmpty {
                 keyValueList(title: "Overflow UUIDs", values: overflow.map { $0.uuidString })
             }
-            if let solicited = item.advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey] as? [CBUUID], !solicited.isEmpty {
+            if let solicited = source.advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey] as? [CBUUID], !solicited.isEmpty {
                 keyValueList(title: "Solicited UUIDs", values: solicited.map { $0.uuidString })
             }
-            if let mfg = item.advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, !mfg.isEmpty {
+            if let mfg = source.advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, !mfg.isEmpty {
                 ValueRow("Manufacturer Data", value: mfg.hexString(spaced: true), monospaced: true)
             }
-            if let serviceData = item.advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data], !serviceData.isEmpty {
+            if let serviceData = source.advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data], !serviceData.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Service Data")
                         .font(.subheadline)
@@ -97,6 +144,19 @@ struct DetailedView: View {
 
     // MARK: - Helpers
 
+    private var hasAnyAdvertisementContent: Bool {
+        // Check if any known advertisement keys exist
+        if let s = source.advertisementData[CBAdvertisementDataLocalNameKey] as? String, !s.isEmpty { return true }
+        if source.advertisementData[CBAdvertisementDataTxPowerLevelKey] != nil { return true }
+        if let uuids = source.advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID], !uuids.isEmpty { return true }
+        if let overflow = source.advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID], !overflow.isEmpty { return true }
+        if let solicited = source.advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey] as? [CBUUID], !solicited.isEmpty { return true }
+        if let mfg = source.advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, !mfg.isEmpty { return true }
+        if let serviceData = source.advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID: Data], !serviceData.isEmpty { return true }
+        // Or any unknown keys
+        return !remainingAdvertisementPairs().isEmpty
+    }
+
     private func keyValueList(title: String, values: [String]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
@@ -120,7 +180,7 @@ struct DetailedView: View {
             CBAdvertisementDataServiceDataKey
         ]
 
-        return item.advertisementData
+        return source.advertisementData
             .filter { !knownKeys.contains($0.key) }
             .map { (key: $0.key, value: stringify($0.value)) }
             .sorted { $0.key < $1.key }
@@ -156,6 +216,17 @@ struct DetailedView: View {
     }
 }
 
+// MARK: - Internal model
+
+private struct DetailSource {
+    let name: String
+    let identifier: String
+    let rssi: Int?
+    let lastSeen: Date?
+    let advertisementData: [String: Any]
+    let isConnectable: Bool?
+}
+
 // MARK: - iOS 15-friendly labeled row
 
 private struct ValueRow: View {
@@ -181,5 +252,14 @@ private struct ValueRow: View {
                 .multilineTextAlignment(.trailing)
         }
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Small Data helper used above
+
+private extension Data {
+    func hexString(_ spaced: Bool = false) -> String {
+        let hex = self.map { String(format: "%02x", $0) }.joined(separator: spaced ? " " : "")
+        return hex.uppercased()
     }
 }

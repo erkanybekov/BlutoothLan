@@ -52,8 +52,25 @@ final class ConnectivityViewModel: ObservableObject {
             .handleEvents(receiveOutput: { [weak self] peripherals in
                 guard let self = self else { return }
                 Task {
+                    let now = Date()
                     for p in peripherals {
-                        try? await self.persistence.upsertBluetoothDevice(from: p)
+                        let id = p.peripheral.identifier.uuidString
+                        // Prefer advertisement local name, then peripheral.name; ignore empty/"Unknown"
+                        let advLocalName = (p.advertisementData[CBAdvertisementDataLocalNameKey] as? String)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let reportedName = p.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let candidateName = (advLocalName?.isEmpty == false ? advLocalName :
+                                             (reportedName.isEmpty ? nil : reportedName))
+
+                        let record = DeviceRecord(
+                            id: id,
+                            name: candidateName,
+                            type: .bluetooth,
+                            lastSeen: now,
+                            rssi: Int32(truncatingIfNeeded: p.rssi.intValue),
+                            ip: nil
+                        )
+                        try? await self.persistence.add(record)
                     }
                 }
             })
@@ -70,8 +87,22 @@ final class ConnectivityViewModel: ObservableObject {
             .handleEvents(receiveOutput: { [weak self] peers in
                 guard let self = self else { return }
                 Task {
+                    let now = Date()
                     for peer in peers {
-                        try? await self.persistence.upsertLANDevice(from: peer)
+                        // Keep your previous uniqueness: id = hostName ?? name
+                        let id = peer.hostName ?? peer.name
+                        let candidateName = peer.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let name = candidateName.isEmpty ? nil : candidateName
+
+                        let record = DeviceRecord(
+                            id: id,
+                            name: name,
+                            type: .lan,
+                            lastSeen: now,
+                            rssi: nil,
+                            ip: peer.hostName
+                        )
+                        try? await self.persistence.add(record)
                     }
                 }
             })

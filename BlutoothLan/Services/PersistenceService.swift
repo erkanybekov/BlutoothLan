@@ -6,106 +6,98 @@
 //
 
 import Foundation
-import CoreData
-import CoreBluetooth
 
 enum DeviceType: Int16 {
     case bluetooth = 0
     case lan = 1
 }
 
+// Plain input model decoupled from Bluetooth/LAN types.
+struct DeviceRecord: Sendable, Hashable {
+    let id: String
+    var name: String?
+    var type: DeviceType
+    var lastSeen: Date?
+    var rssi: Int32?
+    var ip: String?
+
+    init(id: String,
+         name: String? = nil,
+         type: DeviceType,
+         lastSeen: Date? = nil,
+         rssi: Int32? = nil,
+         ip: String? = nil) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.lastSeen = lastSeen
+        self.rssi = rssi
+        self.ip = ip
+    }
+}
+
+// The app-facing model replacing DeviceEntity
+struct Device: Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String?
+    var type: DeviceType
+    var lastSeen: Date?
+    var rssi: Int32
+    var ip: String?
+}
+
 actor PersistenceService {
     static let shared = PersistenceService()
 
-    let container: NSPersistentContainer
+    // In-memory storage keyed by id
+    private var storage: [String: Device] = [:]
 
-    init(inMemory: Bool = false) {
-        container = NSPersistentContainer(name: "BlutoothLan")
-        if inMemory {
-            container.persistentStoreDescriptions.first?.url = URL(fileURLWithPath: "/dev/null")
-        }
-        container.loadPersistentStores { _, error in
-            if let error = error {
-                assertionFailure("Core Data load error: \(error)")
-            }
-        }
-        container.viewContext.automaticallyMergesChangesFromParent = true
-    }
+    init() { }
 
-    // MARK: - Device CRUD
-    
-//Примечание: Для этого нужен DeviceEntity в .xcdatamodeld со свойствами:
-//    • id: String
-//    • name: String (Optional)
-//    • type: Integer 16
-//    • lastSeen: Date (Optional)
-//    • rssi: Integer 32 (Optional)
-//    • ip: String (Optional)
+    // Upsert by id. Never overwrites a meaningful stored name with empty/"Unknown".
+    @discardableResult
+    func add(_ record: DeviceRecord) async -> Device {
+        let existing = storage[record.id]
 
-    func upsertBluetoothDevice(from peripheral: DiscoveredPeripheral) async throws {
-        try await container.performBackgroundTask { ctx in
-            let id = peripheral.peripheral.identifier.uuidString
-            let req: NSFetchRequest<DeviceEntity> = DeviceEntity.fetchRequest()
-            req.predicate = NSPredicate(format: "id == %@", id)
-            req.fetchLimit = 1
-
-            let device: DeviceEntity
-            if let existing = try ctx.fetch(req).first {
-                device = existing
+        // Resolve name: avoid overwriting a good name with empty/Unknown
+        let trimmedCandidate = record.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isMeaningful = (trimmedCandidate?.isEmpty == false) &&
+                           (trimmedCandidate?.caseInsensitiveCompare("unknown") != .orderedSame)
+        let resolvedName: String? = {
+            if isMeaningful {
+                return trimmedCandidate
             } else {
-                device = DeviceEntity(context: ctx)
-                device.id = id
-                device.type = DeviceType.bluetooth.rawValue
+                return existing?.name // keep previous good name
             }
+        }()
 
-            device.name = peripheral.name
-            device.lastSeen = Date()
-            device.rssi = Int32(truncatingIfNeeded: peripheral.rssi.intValue)
-
-            try ctx.save()
-        }
+        let device = Device(
+            id: record.id,
+            name: resolvedName ?? existing?.name,
+            type: record.type,
+            lastSeen: record.lastSeen ?? existing?.lastSeen ?? Date(),
+            rssi: record.rssi ?? existing?.rssi ?? 0,
+            ip: record.ip ?? existing?.ip
+        )
+        storage[record.id] = device
+        return device
     }
 
-    func upsertLANDevice(from peer: LANPeer) async throws {
-        try await container.performBackgroundTask { ctx in
-            let id = peer.hostName ?? peer.name
-            let req: NSFetchRequest<DeviceEntity> = DeviceEntity.fetchRequest()
-            req.predicate = NSPredicate(format: "id == %@", id)
-            req.fetchLimit = 1
-
-            let device: DeviceEntity
-            if let existing = try ctx.fetch(req).first {
-                device = existing
-            } else {
-                device = DeviceEntity(context: ctx)
-                device.id = id
-                device.type = DeviceType.lan.rawValue
-            }
-
-            device.name = peer.name
-            device.lastSeen = Date()
-            device.ip = peer.hostName
-
-            try ctx.save()
-        }
+    func delete(id: String) async {
+        storage.removeValue(forKey: id)
     }
 
-    func fetchDevices(predicate: NSPredicate? = nil,
-                      sort: [NSSortDescriptor] = [NSSortDescriptor(key: "lastSeen", ascending: false)],
-                      limit: Int? = nil) async throws -> [DeviceEntity] {
-        try await withCheckedThrowingContinuation { cont in
-            container.performBackgroundTask { ctx in
-                let req: NSFetchRequest<DeviceEntity> = DeviceEntity.fetchRequest()
-                req.predicate = predicate
-                req.sortDescriptors = sort
-                if let limit { req.fetchLimit = limit }
-                do {
-                    let result = try ctx.fetch(req)
-                    cont.resume(returning: result)
-                } catch {
-                    cont.resume(throwing: error)
-                }
-            }
-        }
+    // Simple fetch using NSPredicate replacement via closure for flexibility
+    // If you prefer NSPredicate, we can add it back, but a closure is simpler without Core Data.
+    func fetch(
+        where matches: ((Device) -> Bool)? = nil,
+        sort: ((Device, Device) -> Bool)? = { ($0.lastSeen ?? .distantPast) > ($1.lastSeen ?? .distantPast) },
+        limit: Int? = nil
+    ) async -> [Device] {
+        var values = Array(storage.values)
+        if let matches { values = values.filter(matches) }
+        if let sort { values.sort(by: sort) }
+        if let limit { values = Array(values.prefix(limit)) }
+        return values
     }
 }
