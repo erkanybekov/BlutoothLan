@@ -9,7 +9,7 @@ import Combine
 import CoreBluetooth
 import CoreData
 
-final class DummyViewModel: ObservableObject {
+final class CoreDataViewModel: ObservableObject {
     @Published private(set) var items: [DeviceEntity] = []
     
     let manager = CoreDataManager.instance

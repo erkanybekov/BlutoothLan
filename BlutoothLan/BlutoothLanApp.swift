@@ -11,7 +11,7 @@ import SwiftUI
 struct BlutoothLanApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            LocalNotificationView()
         }
     }
 }

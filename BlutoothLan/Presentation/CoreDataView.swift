@@ -7,8 +7,8 @@
 
 import SwiftUI
 
-struct DummyView: View {
-    @StateObject var vm = DummyViewModel()
+struct CoreDataView: View {
+    @StateObject var vm = CoreDataViewModel()
     
     var body: some View {
         NavigationView {
@@ -22,8 +22,7 @@ struct DummyView: View {
                         }.onDelete(perform: delete)
                     }
             })
-            .navigationTitle("Relationships")
-            
+            .navigationTitle("CoreData fetch")
             
         }
     }
@@ -36,5 +35,5 @@ struct DummyView: View {
 }
 
 #Preview {
-    DummyView()
+    CoreDataView()
 }
