@@ -7,6 +7,46 @@
 
 @preconcurrency import CoreData
 
+enum DeviceType: Int16 {
+    case bluetooth = 0
+    case lan = 1
+}
+
+// Plain input model decoupled from Bluetooth/LAN types.
+struct DeviceRecord: Sendable, Hashable {
+    let id: String
+    var name: String?
+    var type: DeviceType
+    var lastSeen: Date?
+    var rssi: Int32?
+    var ip: String?
+
+    init(id: String,
+         name: String? = nil,
+         type: DeviceType,
+         lastSeen: Date? = nil,
+         rssi: Int32? = nil,
+         ip: String? = nil) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.lastSeen = lastSeen
+        self.rssi = rssi
+        self.ip = ip
+    }
+}
+
+// The app-facing model replacing DeviceEntity
+struct Device: Identifiable, Hashable, Sendable {
+    let id: String
+    var name: String?
+    var type: DeviceType
+    var lastSeen: Date?
+    var rssi: Int32
+    var ip: String?
+}
+
+
 actor CoreDataManager {
     
     // MARK: - Singleton
@@ -98,6 +138,7 @@ actor CoreDataManager {
     }
     
     /// Upsert a DeviceEntity by id
+    @MainActor
     func upsertDevice(id: String,
                       name: String?,
                       type: Int16,
