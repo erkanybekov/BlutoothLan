@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import CoreData
 
 enum HistoryFilterType: String, CaseIterable, Identifiable {
     case all = "All"
@@ -17,19 +18,28 @@ enum HistoryFilterType: String, CaseIterable, Identifiable {
 
 @MainActor
 final class HistoryViewModel: ObservableObject {
-    private let persistence: PersistenceService
-    
+    // MARK: - Dependencies
+    private let coreData: CoreDataManager
+
+    // MARK: - Published state
     @Published var items: [Device] = []
     @Published var searchText: String = ""
     @Published var filterType: HistoryFilterType = .all
     @Published var dateFrom: Date?
     @Published var dateTo: Date?
-    
-    private var cancellables: Set<AnyCancellable> = []
-    
-    init(persistence: PersistenceService = .shared) {
-        self.persistence = persistence
 
+    // MARK: - Private
+    private var cancellables: Set<AnyCancellable> = []
+
+    // MARK: - Init
+    init(coreData: CoreDataManager = .instance) {
+        self.coreData = coreData
+        bind()
+        Task { await reload() }
+    }
+
+    // MARK: - Binding
+    private func bind() {
         Publishers.CombineLatest4(
             $searchText
                 .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
@@ -39,92 +49,117 @@ final class HistoryViewModel: ObservableObject {
             $dateTo.removeDuplicates()
         )
         .sink { [weak self] _, _, _, _ in
-            Task { await self?.reload() }
+            guard let self else { return }
+            Task { await self.reload() }
         }
         .store(in: &cancellables)
-
-        Task { @MainActor in
-            await self.reload()
-        }
     }
-    
+
+    // MARK: - Public API
+
+    /// Reloads items from Core Data using current filters.
     func reload() async {
-        // Build the filter closure
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasSearch = !trimmedSearch.isEmpty
-
-        let typeFilter: DeviceType? = {
-            switch filterType {
-            case .all: return nil
-            case .bluetooth: return .bluetooth
-            case .lan: return .lan
-            }
-        }()
-
-        let matches: (Device) -> Bool = { device in
-            // Type
-            if let type = typeFilter, device.type != type {
-                return false
-            }
-            // Search in name or id
-            if hasSearch {
-                let name = (device.name ?? "").lowercased()
-                let id = device.id.lowercased()
-                let q = trimmedSearch.lowercased()
-                if !name.contains(q) && !id.contains(q) {
-                    return false
-                }
-            }
-            // Date range
-            if let from = self.dateFrom {
-                if let last = device.lastSeen {
-                    if last < from { return false }
-                } else {
-                    return false
-                }
-            }
-            if let to = self.dateTo {
-                if let last = device.lastSeen {
-                    if last > to { return false }
-                } else {
-                    return false
-                }
-            }
-            return true
+        do {
+            let predicate = buildPredicate(
+                search: searchText,
+                type: filterType,
+                from: dateFrom,
+                to: dateTo
+            )
+            let sort = [NSSortDescriptor(key: "lastSeen", ascending: false)]
+            let entities = try await coreData.fetchDevices(predicate: predicate, sort: sort, fetchLimit: 0)
+            self.items = entities.map(Self.mapEntityToDevice)
+        } catch {
+            // In production, consider surfacing an error state to the UI.
+            print("HistoryViewModel reload error: \(error.localizedDescription)")
+            self.items = []
         }
-
-        let sort: (Device, Device) -> Bool = {
-            ($0.lastSeen ?? .distantPast) > ($1.lastSeen ?? .distantPast)
-        }
-
-        let result = await persistence.fetch(where: matches, sort: sort, limit: nil)
-        self.items = result
     }
-    
-    // MARK: - Deletes
-    
+
+    /// Deletes a single item by id.
     func delete(item: Device) async {
-        let id = item.id
-        await persistence.delete(id: id)
-        await reload()
-    }
-    
-    func deleteAll(of type: HistoryFilterType? = nil) async {
-        switch type {
-        case .some(.bluetooth):
-            await deleteByFilter { $0.type == .bluetooth }
-        case .some(.lan):
-            await deleteByFilter { $0.type == .lan }
-        case .some(.all), .none:
-            await deleteByFilter { _ in true }
+        do {
+            try await coreData.deleteDevice(id: item.id)
+            await reload()
+        } catch {
+            print("HistoryViewModel delete error: \(error.localizedDescription)")
         }
-        await reload()
     }
 
-    private func deleteByFilter(_ predicate: @escaping (Device) -> Bool) async {
-        let all = await persistence.fetch(where: predicate, sort: nil, limit: nil)
-        for obj in all {
-            await persistence.delete(id: obj.id)
+    /// Deletes items by filter type (or all).
+    func deleteAll(of type: HistoryFilterType? = nil) async {
+        do {
+            let predicate: NSPredicate? = {
+                switch type {
+                case .some(.bluetooth):
+                    return NSPredicate(format: "type == %d", DeviceType.bluetooth.rawValue)
+                case .some(.lan):
+                    return NSPredicate(format: "type == %d", DeviceType.lan.rawValue)
+                case .some(.all), .none:
+                    return nil
+                }
+            }()
+            try await coreData.deleteAllDevices(predicate: predicate)
+            await reload()
+        } catch {
+            print("HistoryViewModel deleteAll error: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Helpers
+
+    /// Builds a Core Data predicate from current filters.
+    private func buildPredicate(search: String,
+                                type: HistoryFilterType,
+                                from: Date?,
+                                to: Date?) -> NSPredicate? {
+        var subpredicates: [NSPredicate] = []
+
+        // Type
+        switch type {
+        case .bluetooth:
+            subpredicates.append(NSPredicate(format: "type == %d", DeviceType.bluetooth.rawValue))
+        case .lan:
+            subpredicates.append(NSPredicate(format: "type == %d", DeviceType.lan.rawValue))
+        case .all:
+            break
+        }
+
+        // Search in name or id (case-insensitive)
+        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            let namePred = NSPredicate(format: "name CONTAINS[cd] %@", trimmed)
+            let idPred = NSPredicate(format: "id CONTAINS[cd] %@", trimmed)
+            subpredicates.append(NSCompoundPredicate(orPredicateWithSubpredicates: [namePred, idPred]))
+        }
+
+        // Date range
+        if let from {
+            subpredicates.append(NSPredicate(format: "lastSeen >= %@", from as NSDate))
+        }
+        if let to {
+            subpredicates.append(NSPredicate(format: "lastSeen <= %@", to as NSDate))
+        }
+
+        guard !subpredicates.isEmpty else { return nil }
+        return NSCompoundPredicate(andPredicateWithSubpredicates: subpredicates)
+    }
+
+    /// Maps DeviceEntity to app-facing Device model.
+    private static func mapEntityToDevice(_ e: DeviceEntity) -> Device {
+        Device(
+            id: e.id ?? UUID().uuidString,
+            name: {
+                guard let s = e.name?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+                return s
+            }(),
+            type: DeviceType(rawValue: e.type) ?? .bluetooth,
+            lastSeen: e.lastSeen,
+            rssi: e.rssi,
+            ip: {
+                guard let s = e.ip?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+                return s
+            }()
+        )
     }
 }

@@ -16,7 +16,7 @@ final class ConnectivityViewModel: ObservableObject {
     // Services
     private let bluetoothService: BluetoothServicing
     private let bonjourService: BonjourService
-    private let persistence: PersistenceService
+    private let coreData: CoreDataManager
 
     private var cancellables: Set<AnyCancellable> = []
 
@@ -33,10 +33,10 @@ final class ConnectivityViewModel: ObservableObject {
 
     init(bluetoothService: BluetoothServicing = BluetoothService(),
          bonjourService: BonjourService = BonjourService(),
-         persistence: PersistenceService = .shared) {
+         coreData: CoreDataManager = .instance) {
         self.bluetoothService = bluetoothService
         self.bonjourService = bonjourService
-        self.persistence = persistence
+        self.coreData = coreData
         bind()
     }
 
@@ -51,10 +51,11 @@ final class ConnectivityViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .handleEvents(receiveOutput: { [weak self] peripherals in
                 guard let self = self else { return }
-                Task {
+                Task { // still on MainActor
                     let now = Date()
                     for p in peripherals {
                         let id = p.peripheral.identifier.uuidString
+
                         // Prefer advertisement local name, then peripheral.name; ignore empty/"Unknown"
                         let advLocalName = (p.advertisementData[CBAdvertisementDataLocalNameKey] as? String)?
                             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,15 +63,15 @@ final class ConnectivityViewModel: ObservableObject {
                         let candidateName = (advLocalName?.isEmpty == false ? advLocalName :
                                              (reportedName.isEmpty ? nil : reportedName))
 
-                        let record = DeviceRecord(
+                        // Persist via Core Data upsert
+                        try? await self.coreData.upsertDevice(
                             id: id,
                             name: candidateName,
-                            type: .bluetooth,
+                            type: DeviceType.bluetooth.rawValue,
                             lastSeen: now,
                             rssi: Int32(truncatingIfNeeded: p.rssi.intValue),
                             ip: nil
                         )
-                        try? await self.persistence.add(record)
                     }
                 }
             })
@@ -89,20 +90,19 @@ final class ConnectivityViewModel: ObservableObject {
                 Task {
                     let now = Date()
                     for peer in peers {
-                        // Keep your previous uniqueness: id = hostName ?? name
+                        // Keep previous uniqueness: id = hostName ?? name
                         let id = peer.hostName ?? peer.name
-                        let candidateName = peer.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let name = candidateName.isEmpty ? nil : candidateName
+                        let trimmedName = peer.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let name = trimmedName.isEmpty ? nil : trimmedName
 
-                        let record = DeviceRecord(
+                        try? await self.coreData.upsertDevice(
                             id: id,
                             name: name,
-                            type: .lan,
+                            type: DeviceType.lan.rawValue,
                             lastSeen: now,
                             rssi: nil,
                             ip: peer.hostName
                         )
-                        try? await self.persistence.add(record)
                     }
                 }
             })
@@ -152,3 +152,4 @@ final class ConnectivityViewModel: ObservableObject {
         bonjourService.stopAdvertising()
     }
 }
+

@@ -8,12 +8,20 @@
 import SwiftUI
 
 struct HistoryView: View {
-    @StateObject private var viewModel = HistoryViewModel()
-
-    // Фильтры UI
+    @StateObject private var viewModel: HistoryViewModel
+    
+    // Provide an accessible initializer that creates the StateObject.
+    // This makes HistoryView() constructible from outside and avoids a synthesized private init.
+    init() {
+        _viewModel = StateObject(wrappedValue: HistoryViewModel())
+    }
+    
+    // Filters UI
     @State private var showFilters: Bool = true
     @State private var showClearMenu: Bool = false
-
+    
+    // MARK: - Body
+    
     var body: some View {
         List {
             // MARK: - Filters
@@ -25,14 +33,14 @@ struct HistoryView: View {
                         TextField("Search by name or ID", text: $viewModel.searchText)
                             .textFieldStyle(.roundedBorder)
                     }
-
+                    
                     Picker("Type", selection: $viewModel.filterType) {
                         ForEach(HistoryFilterType.allCases) { t in
                             Text(t.rawValue).tag(t)
                         }
                     }
                     .pickerStyle(.segmented)
-
+                    
                     // Compact date filter menu instead of inline date pickers
                     Menu {
                         // Quick presets
@@ -87,7 +95,7 @@ struct HistoryView: View {
                     }
                 }
             }
-
+            
             // MARK: - Items
             Section(header: Text("Devices")) {
                 if viewModel.items.isEmpty {
@@ -103,8 +111,8 @@ struct HistoryView: View {
                 } else {
                     ForEach(viewModel.items, id: \.id) { device in
                         NavigationLink {
-                            // If you want to reuse DetailedView, you can add an initializer for Device.
-                            // For now, show a simple detail.
+                            // For persisted items, if you want to show DetailedView built from Device,
+                            // you can add a Dedicated initializer to DetailedView for Device.
                             VStack(alignment: .leading, spacing: 12) {
                                 Text(device.name ?? device.id).font(.title3)
                                 Text("ID: \(device.id)").font(.callout).foregroundStyle(.secondary)
@@ -200,7 +208,9 @@ struct HistoryView: View {
             await viewModel.reload()
         }
     }
-
+    
+    // MARK: - Helpers
+    
     private var dateSummary: String {
         switch (viewModel.dateFrom, viewModel.dateTo) {
         case (nil, nil):
@@ -213,7 +223,7 @@ struct HistoryView: View {
             return "\(Self.dateFormatter.string(from: from)) – \(Self.dateFormatter.string(from: to))"
         }
     }
-
+    
     private func deleteRows(at offsets: IndexSet) {
         let toDelete = offsets.map { viewModel.items[$0] }
         Task {
@@ -222,7 +232,7 @@ struct HistoryView: View {
             }
         }
     }
-
+    
     private static let dateFormatter: DateFormatter = {
         let df = DateFormatter()
         df.dateStyle = .short
@@ -230,3 +240,4 @@ struct HistoryView: View {
         return df
     }()
 }
+

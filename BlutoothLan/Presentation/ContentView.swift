@@ -22,7 +22,7 @@ struct ContentView: View {
     @State private var filterText: String = ""
     @State private var sortByRSSI: Bool = true
     @State private var showHistory: Bool = false
-
+    
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
@@ -34,7 +34,7 @@ struct ContentView: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.top, 12)
-
+                
                 Group {
                     switch selectedTab {
                     case .bluetooth:
@@ -72,7 +72,7 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")
                     }
-
+                    
                     switch selectedTab {
                     case .bluetooth:
                         Button(viewModel.isScanningBluetooth ? "Stop" : "Scan") {
@@ -89,17 +89,20 @@ struct ContentView: View {
                     }
                 }
             }
+            // Use isActive binding with a concrete destination view instance.
             .background(
-                NavigationLink(destination: HistoryView(), isActive: $showHistory) {
+                NavigationLink(isActive: $showHistory) {
+                    HistoryView()
+                } label: {
                     EmptyView()
                 }
-                .hidden()
+                    .hidden()
             )
         }
     }
-
+    
     // MARK: - Bluetooth UI
-
+    
     private var bluetoothList: some View {
         List {
             Section {
@@ -120,7 +123,7 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-
+            
             Section(header: Text("Bluetooth Devices")) {
                 let items = filteredAndSortedPeripherals()
                 if items.isEmpty {
@@ -149,7 +152,7 @@ struct ContentView: View {
         }
         .listStyle(.insetGrouped)
     }
-
+    
     private func bluetoothRow(for item: DiscoveredPeripheral) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: "dot.radiowaves.left.and.right")
@@ -192,7 +195,7 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
-
+    
     private func filteredAndSortedPeripherals() -> [DiscoveredPeripheral] {
         var items = viewModel.discoveredPeripherals
         if !filterText.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -214,7 +217,7 @@ struct ContentView: View {
         }
         return items
     }
-
+    
     private func bluetoothFooterText() -> String {
         switch viewModel.bluetoothState {
         case .poweredOn:
@@ -235,9 +238,9 @@ struct ContentView: View {
             return "Bluetooth status is unknown."
         }
     }
-
+    
     // MARK: - LAN UI
-
+    
     private var lanList: some View {
         List {
             Section {
@@ -257,7 +260,7 @@ struct ContentView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-
+            
             Section(header: Text("LAN Peers")) {
                 if viewModel.lanPeers.isEmpty {
                     VStack(alignment: .center, spacing: 6) {
@@ -295,13 +298,13 @@ struct ContentView: View {
         }
         .listStyle(.insetGrouped)
     }
-
+    
     private var isLANActive: Bool {
         viewModel.isBrowsingLAN || viewModel.isAdvertisingLAN
     }
-
+    
     // MARK: - Utils
-
+    
     private func sortDiscovered() {
         if sortByRSSI {
             viewModel.discoveredPeripherals.sort {
@@ -316,7 +319,7 @@ struct ContentView: View {
             }
         }
     }
-
+    
     private func statusTextForBluetooth() -> String {
         switch viewModel.bluetoothState {
         case .unknown: return "Bluetooth: Unknown"
@@ -333,3 +336,4 @@ struct ContentView: View {
 //#Preview {
 //    ContentView()
 //}
+
