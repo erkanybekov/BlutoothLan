@@ -5,6 +5,13 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_blutoothlan._tcp.</string>
+		<string>_blutooth-chat._tcp.</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>This app needs access to local network to discover and communicate with nearby devices.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>This app uses Bluetooth to discover and connect to nearby devices for peer-to-peer communication.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>This app uses Bluetooth to discover nearby devices.</string>
 </dict>
 </plist>

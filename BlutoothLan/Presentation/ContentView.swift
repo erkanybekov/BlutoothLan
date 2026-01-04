@@ -13,6 +13,7 @@ import Combine
 enum ConnectivityTab: String, CaseIterable, Identifiable {
     case bluetooth = "Bluetooth"
     case lan = "LAN"
+    case chat = "P2P Chat"
     var id: String { rawValue }
 }
 
@@ -41,6 +42,8 @@ struct ContentView: View {
                         bluetoothList
                     case .lan:
                         lanList
+                    case .chat:
+                        ChatView()
                     }
                 }
                 .animation(.default, value: selectedTab)
@@ -86,6 +89,8 @@ struct ContentView: View {
                         Button(viewModel.isAdvertisingLAN ? "Stop Adv" : "Advertise") {
                             viewModel.isAdvertisingLAN ? viewModel.stopLANAdvertising() : viewModel.startLANAdvertising()
                         }
+                    case .chat:
+                        EmptyView()
                     }
                 }
             }
