@@ -28,6 +28,9 @@ final class ChatViewModel: ObservableObject {
     @Published var statusMessage: String = "Idle"
     @Published var isAdvertising: Bool = false
     @Published var isBrowsing: Bool = false
+    @Published var isSendingImage: Bool = false
+    
+    // MARK: - Computed Properties
     
     var myName: String {
         // Must match the format used in MultipeerService
@@ -38,6 +41,10 @@ final class ChatViewModel: ObservableObject {
     
     var connectedPeersCount: Int {
         peers.filter { $0.state == .connected }.count
+    }
+    
+    var canSendMessage: Bool {
+        connectedPeersCount > 0
     }
     
     // MARK: - Private Properties
@@ -81,7 +88,7 @@ final class ChatViewModel: ObservableObject {
             .assign(to: &$isBrowsing)
     }
     
-    // MARK: - Public Methods
+    // MARK: - Connection Methods
     
     func startAdvertising() {
         multipeerService.startAdvertising()
@@ -99,16 +106,30 @@ final class ChatViewModel: ObservableObject {
         multipeerService.stopBrowsing()
     }
     
-    func sendMessage(_ text: String) {
-        multipeerService.sendMessage(text)
-    }
-    
     func invitePeer(_ peer: PeerDevice) {
         multipeerService.invitePeer(peer)
     }
     
     func disconnect() {
         multipeerService.disconnect()
+    }
+    
+    // MARK: - Message Methods
+    
+    func sendMessage(_ text: String) {
+        multipeerService.sendMessage(text)
+    }
+    
+    func sendImage(_ image: UIImage) {
+        isSendingImage = true
+        
+        // Process image in background to avoid UI freeze
+        Task {
+            multipeerService.sendImage(image)
+            await MainActor.run {
+                isSendingImage = false
+            }
+        }
     }
     
     func clearMessages() {

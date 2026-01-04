@@ -16,6 +16,7 @@
 import Foundation
 import MultipeerConnectivity
 import Combine
+import UIKit
 
 // MARK: - Models
 
@@ -33,15 +34,98 @@ struct PeerDevice: Identifiable, Hashable {
     }
 }
 
+// MARK: - Message Content Type
+
+enum MessageContent: Codable, Equatable {
+    case text(String)
+    case image(Data)
+    
+    private enum CodingKeys: String, CodingKey {
+        case type, value
+    }
+    
+    private enum ContentType: String, Codable {
+        case text, image
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(ContentType.self, forKey: .type)
+        
+        switch type {
+        case .text:
+            let value = try container.decode(String.self, forKey: .value)
+            self = .text(value)
+        case .image:
+            let value = try container.decode(Data.self, forKey: .value)
+            self = .image(value)
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        
+        switch self {
+        case .text(let string):
+            try container.encode(ContentType.text, forKey: .type)
+            try container.encode(string, forKey: .value)
+        case .image(let data):
+            try container.encode(ContentType.image, forKey: .type)
+            try container.encode(data, forKey: .value)
+        }
+    }
+}
+
+// MARK: - Message Model
+
 struct Message: Identifiable, Codable {
     let id: UUID
-    let text: String
+    let content: MessageContent
     let senderName: String
     let timestamp: Date
     
+    /// Convenience accessor for text content
+    var text: String? {
+        if case .text(let string) = content {
+            return string
+        }
+        return nil
+    }
+    
+    /// Convenience accessor for image content
+    var image: UIImage? {
+        if case .image(let data) = content {
+            return UIImage(data: data)
+        }
+        return nil
+    }
+    
+    /// Check if message contains an image
+    var isImage: Bool {
+        if case .image = content { return true }
+        return false
+    }
+    
+    // MARK: - Initializers
+    
     init(text: String, senderName: String) {
         self.id = UUID()
-        self.text = text
+        self.content = .text(text)
+        self.senderName = senderName
+        self.timestamp = Date()
+    }
+    
+    init(imageData: Data, senderName: String) {
+        self.id = UUID()
+        self.content = .image(imageData)
+        self.senderName = senderName
+        self.timestamp = Date()
+    }
+    
+    init(image: UIImage, senderName: String, compressionQuality: CGFloat = 0.7) {
+        self.id = UUID()
+        let data = image.jpegData(compressionQuality: compressionQuality) ?? Data()
+        self.content = .image(data)
         self.senderName = senderName
         self.timestamp = Date()
     }
@@ -61,6 +145,7 @@ protocol MultipeerServicing {
     func startBrowsing()
     func stopBrowsing()
     func sendMessage(_ text: String)
+    func sendImage(_ image: UIImage)
     func invitePeer(_ peer: PeerDevice)
     func disconnect()
 }
@@ -175,7 +260,23 @@ final class MultipeerService: NSObject, MultipeerServicing {
         }
         
         let message = Message(text: text, senderName: myPeerID.displayName)
+        sendMessageToPeers(message)
+    }
+    
+    func sendImage(_ image: UIImage) {
+        guard !session.connectedPeers.isEmpty else {
+            statusSubject.send("No connected peers")
+            return
+        }
         
+        // Compress image to reduce transfer size
+        let message = Message(image: image, senderName: myPeerID.displayName, compressionQuality: 0.6)
+        sendMessageToPeers(message)
+    }
+    
+    // MARK: - Private Send Helper
+    
+    private func sendMessageToPeers(_ message: Message) {
         // Add to local messages
         var messages = messagesSubject.value
         messages.append(message)
@@ -210,10 +311,7 @@ final class MultipeerService: NSObject, MultipeerServicing {
             PeerDevice(id: $0, state: .connected)
         }
         
-        // Merge with discovered peers from browser
-        var allPeers = connectedPeers
-        
-        peersSubject.send(allPeers)
+        peersSubject.send(connectedPeers)
     }
     
     private func updateStatus() {
