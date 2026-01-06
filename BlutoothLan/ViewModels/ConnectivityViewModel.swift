@@ -14,7 +14,7 @@ import SwiftUI
 @MainActor
 final class ConnectivityViewModel: ObservableObject {
     // Services
-    private let bluetoothService: BluetoothServicing
+    let bluetoothService: BluetoothService
     private let bonjourService: BonjourService
     private let coreData: CoreDataManager
 
@@ -31,7 +31,7 @@ final class ConnectivityViewModel: ObservableObject {
     @Published var isAdvertisingLAN = false
     @Published var lanStatusMessage: String = "Idle"
 
-    init(bluetoothService: BluetoothServicing = BluetoothService(),
+    init(bluetoothService: BluetoothService = BluetoothService(),
          bonjourService: BonjourService = BonjourService(),
          coreData: CoreDataManager = .instance) {
         self.bluetoothService = bluetoothService

@@ -148,7 +148,7 @@ struct ContentView: View {
                     .padding(.vertical, 24)
                 } else {
                     ForEach(items) { item in
-                        NavigationLink(destination: DetailedView(item: item)) {
+                        NavigationLink(destination: DetailedView(item: item, bluetoothService: viewModel.bluetoothService)) {
                             bluetoothRow(for: item)
                         }
                     }
