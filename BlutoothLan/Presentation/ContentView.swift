@@ -17,12 +17,25 @@ enum ConnectivityTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum AppSheet: Identifiable {
+    case palmAuth
+    case history
+    
+    var id: Int {
+        switch self {
+        case .palmAuth: return 0
+        case .history: return 1
+        }
+    }
+}
+
 struct ContentView: View {
     @StateObject private var viewModel = ConnectivityViewModel()
     @State private var selectedTab: ConnectivityTab = .bluetooth
     @State private var filterText: String = ""
     @State private var sortByRSSI: Bool = true
     @State private var showHistory: Bool = false
+    @State private var activeSheet: AppSheet?
     
     var body: some View {
         NavigationView {
@@ -71,7 +84,13 @@ struct ContentView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button {
-                        showHistory = true
+                        activeSheet = .palmAuth
+                    } label: {
+                        Image(systemName: "hand.raised.fill")
+                    }
+                    
+                    Button {
+                        activeSheet = .history
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")
                     }
@@ -94,15 +113,16 @@ struct ContentView: View {
                     }
                 }
             }
-            // Use isActive binding with a concrete destination view instance.
-            .background(
-                NavigationLink(isActive: $showHistory) {
-                    HistoryView()
-                } label: {
-                    EmptyView()
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .palmAuth:
+                    PalmAuthView()
+                case .history:
+                    NavigationView {
+                        HistoryView()
+                    }
                 }
-                    .hidden()
-            )
+            }
         }
     }
     
