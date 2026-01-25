@@ -83,6 +83,8 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    // Camera test button (for debugging)
+                    
                     Button {
                         activeSheet = .palmAuth
                     } label: {
