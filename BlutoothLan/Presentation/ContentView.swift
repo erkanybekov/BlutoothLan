@@ -14,6 +14,7 @@ enum ConnectivityTab: String, CaseIterable, Identifiable {
     case bluetooth = "Bluetooth"
     case lan = "LAN"
     case chat = "P2P Chat"
+    case print = "Print"
     var id: String { rawValue }
 }
 
@@ -44,6 +45,8 @@ struct ContentView: View {
                         lanList
                     case .chat:
                         ChatView()
+                    case .print:
+                        PrintView(bluetoothService: viewModel.bluetoothService)
                     }
                 }
                 .animation(.default, value: selectedTab)
@@ -89,7 +92,7 @@ struct ContentView: View {
                         Button(viewModel.isAdvertisingLAN ? "Stop Adv" : "Advertise") {
                             viewModel.isAdvertisingLAN ? viewModel.stopLANAdvertising() : viewModel.startLANAdvertising()
                         }
-                    case .chat:
+                    case .chat, .print:
                         EmptyView()
                     }
                 }

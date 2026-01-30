@@ -13,10 +13,14 @@ import CoreBluetooth
 struct DetailedView: View {
     private let item: DiscoveredPeripheral
     @StateObject private var viewModel: DeviceDetailViewModel
+    @StateObject private var printerViewModel: PrinterViewModel
     @State private var expandedServices: Set<String> = []
     @State private var showWriteSheet = false
     @State private var selectedCharacteristic: DiscoveredCharacteristic?
     @State private var writeText = ""
+    @State private var showPrintSheet = false
+    @State private var showImagePicker = false
+    @State private var sourceType: UIImagePickerController.SourceType = .photoLibrary
     @Environment(\.scenePhase) private var scenePhase
     
     init(item: DiscoveredPeripheral, bluetoothService: BluetoothService) {
@@ -25,6 +29,7 @@ struct DetailedView: View {
             peripheral: item.peripheral,
             bluetoothService: bluetoothService
         ))
+        self._printerViewModel = StateObject(wrappedValue: PrinterViewModel(bluetoothService: bluetoothService))
     }
 
     var body: some View {
@@ -32,6 +37,11 @@ struct DetailedView: View {
             // Quick Actions (when connected)
             if viewModel.connectionState == .ready {
                 quickActionsSection
+            }
+            
+            // Printer Actions (if this is a printer)
+            if viewModel.connectionState == .ready && isPrinterDevice {
+                printerActionsSection
             }
             
             // Connection section (only for connectable devices)
@@ -68,6 +78,12 @@ struct DetailedView: View {
         }
         .sheet(isPresented: $showWriteSheet) {
             writeSheet
+        }
+        .sheet(isPresented: $showPrintSheet) {
+            printSheet
+                .sheet(isPresented: $showImagePicker) {
+                    ImagePicker(image: $printerViewModel.selectedImage, sourceType: sourceType)
+                }
         }
         .onChange(of: scenePhase) { newPhase in
             // Only disconnect when app goes to background, not on navigation
@@ -130,6 +146,249 @@ struct DetailedView: View {
             .padding(.bottom, 30)
             .transition(.move(edge: .bottom).combined(with: .opacity))
             .animation(.spring(response: 0.4, dampingFraction: 0.8), value: viewModel.lastWriteResult?.timestamp)
+        }
+    }
+    
+    // MARK: - Printer Detection
+    
+    private var isPrinterDevice: Bool {
+        return printerViewModel.isPrinterDevice(peripheral: item.peripheral, advertisementData: item.advertisementData) ||
+               printerViewModel.isPrinterDevice(services: viewModel.services)
+    }
+    
+    // MARK: - Printer Actions Section
+    
+    private var printerActionsSection: some View {
+        Section {
+            // Print status
+            HStack {
+                Image(systemName: "printer.fill")
+                    .foregroundStyle(.blue)
+                Text("Thermal Printer")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Spacer()
+                if printerViewModel.isPrinterReady {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+            
+            // Print image button
+            Button {
+                showPrintSheet = true
+            } label: {
+                HStack {
+                    Image(systemName: "photo")
+                    Text("Print Image")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!printerViewModel.isPrinterReady)
+            
+            // Quick actions
+            HStack(spacing: 12) {
+                Button {
+                    Task {
+                        try? await printerViewModel.testPrinter()
+                    }
+                } label: {
+                    Label("Test", systemImage: "printer")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!printerViewModel.isPrinterReady)
+                
+                Button {
+                    Task {
+                        try? await printerViewModel.feedPaper()
+                    }
+                } label: {
+                    Label("Feed", systemImage: "arrow.down")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!printerViewModel.isPrinterReady)
+
+                Button {
+                    Task {
+                        try? await printerViewModel.testAllWriteCharacteristics()
+                    }
+                } label: {
+                    Label("Probe", systemImage: "magnifyingglass")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!printerViewModel.isPrinterReady)
+            }
+            
+            // Status
+            if printerViewModel.status.isActive {
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(printerViewModel.status.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            
+            // Debug info
+            if let services = viewModel.services.first(where: { service in
+                let uuid = service.id.uppercased()
+                return PrinterService.knownPrinterServiceUUIDs.contains(uuid)
+            }) {
+                DisclosureGroup("Printer Characteristics (Debug)") {
+                    ForEach(services.characteristics) { char in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(char.id)
+                                .font(.caption2)
+                                .monospaced()
+                            Text("Properties: \(char.propertiesDescription)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .font(.caption)
+            }
+        } header: {
+            Label("Printer", systemImage: "printer.fill")
+        } footer: {
+            Text("This device appears to be a thermal printer. You can print images directly from this view.")
+        }
+    }
+    
+    // MARK: - Print Sheet
+    
+    @ViewBuilder
+    private var printSheet: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                if let selectedImage = printerViewModel.selectedImage {
+                    // Image preview and print
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            // Preview
+                            if let preview = printerViewModel.processedPreview {
+                                VStack(spacing: 12) {
+                                    Text("Print Preview")
+                                        .font(.headline)
+                                    
+                                    Image(uiImage: preview)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .cornerRadius(12)
+                                        .shadow(radius: 4)
+                                }
+                                .padding()
+                            }
+                            
+                            // Print button
+                            Button {
+                                Task {
+                                    do {
+                                        try await printerViewModel.printCurrentJob()
+                                        showPrintSheet = false
+                                    } catch {
+                                        // Error handled by view model
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "printer.fill")
+                                    Text("Print Now")
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                                .background(printerViewModel.canPrint ? Color.blue : Color.gray)
+                                .foregroundColor(.white)
+                                .cornerRadius(12)
+                            }
+                            .disabled(!printerViewModel.canPrint)
+                            .padding(.horizontal)
+                            
+                            // Status
+                            if case .printing(let progress) = printerViewModel.status {
+                                VStack(spacing: 8) {
+                                    ProgressView(value: progress)
+                                        .padding(.horizontal)
+                                    Text("\(Int(progress * 100))%")
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Image selection
+                    VStack(spacing: 20) {
+                        Image(systemName: "photo.stack")
+                            .font(.system(size: 60))
+                            .foregroundStyle(.secondary)
+                        
+                        Text("Select an image to print")
+                            .font(.headline)
+                        
+                        VStack(spacing: 12) {
+                            Button {
+                                sourceType = .photoLibrary
+                                showImagePicker = true
+                            } label: {
+                                Label("Choose from Gallery", systemImage: "photo.on.rectangle")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .padding(.horizontal)
+                            
+                            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                                Button {
+                                    sourceType = .camera
+                                    showImagePicker = true
+                                } label: {
+                                    Label("Take Photo", systemImage: "camera")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.bordered)
+                                .padding(.horizontal)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("Print Image")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        printerViewModel.clearSelection()
+                        showPrintSheet = false
+                    }
+                }
+            }
+        }
+        .alert("Error", isPresented: .constant(printerViewModel.errorMessage != nil)) {
+            Button("OK") {
+                printerViewModel.errorMessage = nil
+            }
+        } message: {
+            if let error = printerViewModel.errorMessage {
+                Text(error)
+            }
+        }
+        .onChange(of: printerViewModel.selectedImage) { newImage in
+            if newImage != nil {
+                Task {
+                    try? await printerViewModel.processImage()
+                }
+            }
         }
     }
     
