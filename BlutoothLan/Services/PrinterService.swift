@@ -297,25 +297,30 @@ final class PrinterService: ObservableObject {
         printProgress = 0
         lastError = nil
         
+        // Timing constants (slower = better quality)
+        let lineDelayNs: UInt64 = 15_000_000      // 15ms per line
+        let batchSize = 8                          // Lines per batch
+        let batchDelayNs: UInt64 = 100_000_000    // 100ms pause every batch
+        
         do {
             // Step 1: Set quality to best
             try await sendCommand(X6hProtocol.setQuality(0x35), to: characteristic)
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await Task.sleep(nanoseconds: 100_000_000)
             printProgress = 0.02
             
-            // Step 2: Set feed speed (slower = better quality)
-            try await sendCommand(X6hProtocol.setFeedSpeed(0x30), to: characteristic)
-            try await Task.sleep(nanoseconds: 50_000_000)
+            // Step 2: Set feed speed (0x40 = slowest for best quality)
+            try await sendCommand(X6hProtocol.setFeedSpeed(0x40), to: characteristic)
+            try await Task.sleep(nanoseconds: 100_000_000)
             printProgress = 0.04
             
             // Step 3: Set energy (increase for darker print)
-            try await sendCommand(X6hProtocol.setEnergy(0x5000), to: characteristic)
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await sendCommand(X6hProtocol.setEnergy(0x6000), to: characteristic)
+            try await Task.sleep(nanoseconds: 100_000_000)
             printProgress = 0.06
             
             // Step 4: Start print
             try await sendCommand(X6hProtocol.startPrint(), to: characteristic)
-            try await Task.sleep(nanoseconds: 100_000_000)
+            try await Task.sleep(nanoseconds: 200_000_000)
             printProgress = 0.08
             
             // Step 5: Send scanlines (each row is 48 bytes = 384 pixels)
@@ -325,7 +330,7 @@ final class PrinterService: ObservableObject {
             
             // First line should be white (zeros) to avoid artifacts
             try await sendCommand(X6hProtocol.rawScanline([UInt8](repeating: 0, count: bytesPerLine)), to: characteristic)
-            try await Task.sleep(nanoseconds: 5_000_000) // 5ms between lines
+            try await Task.sleep(nanoseconds: lineDelayNs)
             
             for lineIndex in 0..<totalLines {
                 let start = lineIndex * bytesPerLine
@@ -337,18 +342,23 @@ final class PrinterService: ObservableObject {
                 
                 printProgress = 0.1 + (0.85 * Double(lineIndex + 1) / Double(totalLines))
                 
-                // Small delay between lines
-                try await Task.sleep(nanoseconds: 3_000_000) // 3ms
+                // Delay per line
+                try await Task.sleep(nanoseconds: lineDelayNs)
+                
+                // Extra pause every batch to let printer catch up
+                if (lineIndex + 1) % batchSize == 0 {
+                    try await Task.sleep(nanoseconds: batchDelayNs)
+                }
             }
             
-            // Step 6: Feed paper (pixels, not lines!)
+            // Step 6: Feed paper
             try await sendCommand(X6hProtocol.feedPaper(pixels: 200), to: characteristic)
-            try await Task.sleep(nanoseconds: 200_000_000)
+            try await Task.sleep(nanoseconds: 300_000_000)
             printProgress = 0.97
             
-            // Step 7: Reset printer state for next print
+            // Step 7: Reset printer state
             try await sendCommand(X6hProtocol.setQuality(0x35), to: characteristic)
-            try await Task.sleep(nanoseconds: 50_000_000)
+            try await Task.sleep(nanoseconds: 100_000_000)
             printProgress = 1.0
             
             isPrinting = false

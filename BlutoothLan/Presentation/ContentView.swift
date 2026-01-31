@@ -45,8 +45,8 @@ struct ContentView: View {
                         lanList
                     case .chat:
                         ChatView()
-                    case .print:
-                        PrintView(bluetoothService: viewModel.bluetoothService)
+                    default:
+                        EmptyView()
                     }
                 }
                 .animation(.default, value: selectedTab)

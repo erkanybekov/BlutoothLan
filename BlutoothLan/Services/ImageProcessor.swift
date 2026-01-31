@@ -35,16 +35,21 @@ enum ImageProcessingError: LocalizedError {
 
 struct DitheringOptions {
     var threshold: UInt8 = 128
-    var contrast: Double = 1.2 // Increased for better contrast
-    var brightness: Double = 0.1 // Slightly brighter
+    var contrast: Double = 1.2
+    var brightness: Double = 0.1
+    var sharpness: Double = 0.5      // 0-1, edge sharpening
+    var gamma: Double = 1.1          // Gamma correction
+    var useAtkinson: Bool = true     // Atkinson dithering (better for thermal)
     
     static let `default` = DitheringOptions()
     
-    // Better quality for photos
     static let highQuality = DitheringOptions(
         threshold: 140,
-        contrast: 1.3,
-        brightness: 0.15
+        contrast: 1.4,
+        brightness: 0.1,
+        sharpness: 0.7,
+        gamma: 1.15,
+        useAtkinson: true
     )
 }
 
@@ -76,18 +81,23 @@ final class ImageProcessor {
             throw ImageProcessingError.conversionFailed
         }
         
-        // Step 3: Apply contrast and brightness adjustments
+        // Step 3: Apply contrast, brightness, sharpness, gamma
         let adjustedImage = applyAdjustments(
             image: grayImage,
             brightness: options.brightness,
-            contrast: options.contrast
+            contrast: options.contrast,
+            sharpness: options.sharpness,
+            gamma: options.gamma
         )
         
-        // Step 4: Apply Floyd-Steinberg dithering
-        guard let ditheredPixels = applyFloydSteinbergDithering(
-            image: adjustedImage,
-            threshold: options.threshold
-        ) else {
+        // Step 4: Apply dithering
+        let ditheredPixels: [[Bool]]?
+        if options.useAtkinson {
+            ditheredPixels = applyAtkinsonDithering(image: adjustedImage, threshold: options.threshold)
+        } else {
+            ditheredPixels = applyFloydSteinbergDithering(image: adjustedImage, threshold: options.threshold)
+        }
+        guard let ditheredPixels else {
             throw ImageProcessingError.ditheringFailed
         }
         
@@ -151,31 +161,42 @@ final class ImageProcessor {
     private static func applyAdjustments(
         image: UIImage,
         brightness: Double,
-        contrast: Double
+        contrast: Double,
+        sharpness: Double = 0.0,
+        gamma: Double = 1.0
     ) -> UIImage {
-        guard let ciImage = CIImage(image: image),
-              brightness != 0.0 || contrast != 1.0 else {
-            return image
-        }
+        guard let ciImage = CIImage(image: image) else { return image }
         
         var outputImage = ciImage
         
-        // Apply brightness
-        if brightness != 0.0 {
-            if let filter = CIFilter(name: "CIColorControls") {
+        // Apply gamma correction
+        if gamma != 1.0 {
+            if let filter = CIFilter(name: "CIGammaAdjust") {
                 filter.setValue(outputImage, forKey: kCIInputImageKey)
-                filter.setValue(brightness, forKey: kCIInputBrightnessKey)
+                filter.setValue(gamma, forKey: "inputPower")
                 if let output = filter.outputImage {
                     outputImage = output
                 }
             }
         }
         
-        // Apply contrast
-        if contrast != 1.0 {
+        // Apply brightness & contrast
+        if brightness != 0.0 || contrast != 1.0 {
             if let filter = CIFilter(name: "CIColorControls") {
                 filter.setValue(outputImage, forKey: kCIInputImageKey)
+                filter.setValue(brightness, forKey: kCIInputBrightnessKey)
                 filter.setValue(contrast, forKey: kCIInputContrastKey)
+                if let output = filter.outputImage {
+                    outputImage = output
+                }
+            }
+        }
+        
+        // Apply sharpening
+        if sharpness > 0 {
+            if let filter = CIFilter(name: "CISharpenLuminance") {
+                filter.setValue(outputImage, forKey: kCIInputImageKey)
+                filter.setValue(sharpness, forKey: kCIInputSharpnessKey)
                 if let output = filter.outputImage {
                     outputImage = output
                 }
@@ -255,6 +276,60 @@ final class ImageProcessor {
         return max(0, min(255, value))
     }
     
+    // MARK: - Atkinson Dithering (better for thermal printers)
+    
+    private static func applyAtkinsonDithering(
+        image: UIImage,
+        threshold: UInt8
+    ) -> [[Bool]]? {
+        guard let cgImage = image.cgImage else { return nil }
+        
+        let width = cgImage.width
+        let height = cgImage.height
+        
+        guard let pixelData = cgImage.dataProvider?.data,
+              let data = CFDataGetBytePtr(pixelData) else { return nil }
+        
+        let bytesPerRow = cgImage.bytesPerRow
+        let bytesPerPixel = cgImage.bitsPerPixel / 8
+        
+        var grayscale = [[Int]](repeating: [Int](repeating: 0, count: width), count: height)
+        
+        for y in 0..<height {
+            for x in 0..<width {
+                let offset = y * bytesPerRow + x * bytesPerPixel
+                grayscale[y][x] = Int(data[offset])
+            }
+        }
+        
+        var result = [[Bool]](repeating: [Bool](repeating: false, count: width), count: height)
+        
+        // Atkinson: distributes 6/8 of error (loses 1/4), creates cleaner output
+        for y in 0..<height {
+            for x in 0..<width {
+                let oldPixel = grayscale[y][x]
+                let newPixel = oldPixel > Int(threshold) ? 255 : 0
+                result[y][x] = newPixel == 0
+                
+                let error = (oldPixel - newPixel) / 8
+                
+                // Atkinson pattern: 1/8 to each of 6 neighbors
+                if x + 1 < width { grayscale[y][x + 1] = clamp(grayscale[y][x + 1] + error) }
+                if x + 2 < width { grayscale[y][x + 2] = clamp(grayscale[y][x + 2] + error) }
+                if y + 1 < height {
+                    if x > 0 { grayscale[y + 1][x - 1] = clamp(grayscale[y + 1][x - 1] + error) }
+                    grayscale[y + 1][x] = clamp(grayscale[y + 1][x] + error)
+                    if x + 1 < width { grayscale[y + 1][x + 1] = clamp(grayscale[y + 1][x + 1] + error) }
+                }
+                if y + 2 < height {
+                    grayscale[y + 2][x] = clamp(grayscale[y + 2][x] + error)
+                }
+            }
+        }
+        
+        return result
+    }
+    
     // MARK: - Preview Image Creation
     
     private static func createImageFromBoolArray(pixels: [[Bool]], width: Int) -> UIImage? {
@@ -292,8 +367,6 @@ final class ImageProcessor {
     private static let x6hBytesPerLine = 48
     
     private static func convertToESCPOS(pixels: [[Bool]], width: Int) -> Data {
-        let height = pixels.count
-        
         var imageBytes = [UInt8]()
         
         // X6h expects raw scanlines without header
