@@ -174,6 +174,21 @@ struct DetailedView: View {
                 }
             }
             
+            // В printerActionsSection, после status:
+            if printerViewModel.isBiometricAvailable {
+                HStack {
+                    Image(systemName: printerViewModel.biometricType == .faceID ? "faceid" : "touchid")
+                        .foregroundStyle(.blue)
+                    Text("Protected by \(printerViewModel.biometricType.displayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Image(systemName: "lock.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                }
+            }
+            
             // Print image button
             Button {
                 showPrintSheet = true

@@ -15,6 +15,10 @@ import SwiftUI
 @MainActor
 final class PrinterViewModel: ObservableObject {
     
+    // MARK: - Biometric Auth
+    
+    private let biometricAuth = BiometricAuthService()
+    
     // MARK: - Published Properties
     
     @Published var currentJob: PrintJob?
@@ -108,6 +112,32 @@ final class PrinterViewModel: ObservableObject {
         isPrinterReady = connectedPrinter != nil && printerService.hasValidCharacteristics
     }
     
+    // MARK: - Biometric Auth Helpers
+    
+    var biometricType: BiometricType {
+        return biometricAuth.biometricType()
+    }
+    
+    var isBiometricAvailable: Bool {
+        return biometricAuth.isBiometricAvailable()
+    }
+    
+    /// Authenticate user before printing
+    private func authenticateForPrint() async throws {
+        let biometricName = biometricAuth.biometricType().displayName
+        let reason = "Authenticate with \(biometricName) to print"
+        
+        do {
+            let authenticated = try await biometricAuth.authenticate(reason: reason)
+            if !authenticated {
+                throw BiometricAuthError.authenticationFailed
+            }
+        } catch {
+            // Rethrow the error to be handled by caller
+            throw error
+        }
+    }
+    
     // MARK: - Image Selection
     
     func selectImage(_ image: UIImage) {
@@ -169,7 +199,7 @@ final class PrinterViewModel: ObservableObject {
         }
     }
     
-    // MARK: - Printing
+    // MARK: - Printing (with Face ID/Touch ID)
     
     func printCurrentJob() async throws {
         guard let job = currentJob,
@@ -181,6 +211,20 @@ final class PrinterViewModel: ObservableObject {
             throw PrinterError.notConnected
         }
         
+        // 🔐 REQUIRE BIOMETRIC AUTHENTICATION BEFORE PRINTING
+        do {
+            try await authenticateForPrint()
+        } catch let error as BiometricAuthError {
+            status = .failed(error.localizedDescription ?? "Authentication failed")
+            errorMessage = error.localizedDescription
+            throw error
+        } catch {
+            status = .failed("Authentication failed")
+            errorMessage = "Authentication failed"
+            throw error
+        }
+        
+        // Authentication successful, proceed with printing
         status = .printing(progress: 0)
         
         do {
@@ -201,14 +245,14 @@ final class PrinterViewModel: ObservableObject {
         }
     }
     
-    /// Quick print: select, process, and print in one go
+    /// Quick print: select, process, and print in one go (with Face ID)
     func quickPrint(image: UIImage) async throws {
         selectImage(image)
         try await processImage()
-        try await printCurrentJob()
+        try await printCurrentJob() // Will require Face ID inside
     }
     
-    // MARK: - Printer Actions
+    // MARK: - Printer Actions (without Face ID requirement)
     
     func testPrinter() async throws {
         guard isPrinterReady else {

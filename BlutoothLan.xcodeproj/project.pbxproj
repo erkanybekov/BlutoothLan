@@ -6,7 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4168FA062F38BCCB0049C0C7 /* LocalAuthentication.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4168FA052F38BCCB0049C0C7 /* LocalAuthentication.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
+		4168FA052F38BCCB0049C0C7 /* LocalAuthentication.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = LocalAuthentication.framework; path = System/Library/Frameworks/LocalAuthentication.framework; sourceTree = SDKROOT; };
 		41B99A562EA27CFC0085DF68 /* BlutoothLan.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BlutoothLan.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -36,16 +41,26 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4168FA062F38BCCB0049C0C7 /* LocalAuthentication.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		4168FA042F38BCCB0049C0C7 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4168FA052F38BCCB0049C0C7 /* LocalAuthentication.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		41B99A4D2EA27CFC0085DF68 = {
 			isa = PBXGroup;
 			children = (
 				41B99A582EA27CFC0085DF68 /* BlutoothLan */,
+				4168FA042F38BCCB0049C0C7 /* Frameworks */,
 				41B99A572EA27CFC0085DF68 /* Products */,
 			);
 			sourceTree = "<group>";
