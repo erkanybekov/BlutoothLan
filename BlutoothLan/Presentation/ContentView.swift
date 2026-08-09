@@ -77,6 +77,12 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "clock.arrow.circlepath")
                     }
+
+                    NavigationLink {
+                        ShaderLabView()
+                    } label: {
+                        Image(systemName: "wand.and.stars")
+                    }
                     
                     switch selectedTab {
                     case .bluetooth:
