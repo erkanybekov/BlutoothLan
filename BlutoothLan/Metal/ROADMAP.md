@@ -35,31 +35,73 @@ working within it or around it.
 
 ---
 
-## Part 2 — The real render pipeline (not built yet)
+## Part 2 — The real render pipeline ✅ built
 
-You'd move here when you hit Part 1's ceiling: no multi-pass, no render-to-texture, no control
-over geometry, can't read your own output.
+Toolbar cube icon → **Metal Lab**. Code in `Renderer.swift` (host side) and `Shaders.metal`
+(GPU side). This is what Part 1 was hiding from you.
 
 Doc: [Using a Render Pipeline to Render Primitives](https://developer.apple.com/documentation/metal/using-a-render-pipeline-to-render-primitives)
 
-- **9** — Object graph, clear colour only. `MTLDevice` → `MTLCommandQueue` → `MTLCommandBuffer` →
-  `MTLRenderCommandEncoder` → `commit`. The once-vs-per-frame split: pipeline state built once,
-  encoders thrown away every frame.
-- **10** — First triangle. `[[vertex_id]]`, no buffer. NDC space is −1…1 with **y up**, unlike UIKit.
-- **11** — Vertex buffers + interpolation. Three corner colours → a gradient, in fixed-function
-  hardware. This is why fragment shaders are where image work lives.
-- **12** — Textures + full-screen quad. `MTKTextureLoader`, samplers, UV space 0…1 origin top-left
-  (*different again* from NDC). Multi-pass: adjustments → dither as separate passes.
+| Step | Teaches | Try changing |
+|---|---|---|
+| 9 · Clear colour | The object graph runs end to end with nothing drawn. `MTLDevice` → `MTLCommandQueue` → `MTLCommandBuffer` → `MTLRenderCommandEncoder` → `commit`. | Change `view.clearColor`. Then comment out `commandBuffer.commit()` and watch it freeze. |
+| 10 · Triangle | `[[vertex_id]]` with no buffer at all. NDC: −1…1, origin centre, **+Y up** (opposite of UIKit). | Move a vertex past 1.0 and watch it clip. Add a 4th and change `vertexCount` to 6 for a quad. |
+| 11 · Vertex buffer | **Interpolation.** You write 3 colours; the rasterizer generates every pixel between them in fixed-function hardware. | Set all three vertex colours identical — the gradient vanishes, proving where it came from. |
+| 12 · Texture + quad | `MTKTextureLoader`, samplers, UV space (0…1, origin **top-left** — different from NDC again). Uniform via `setFragmentBytes`. | Set uv to `[0,1]`/`[0,0]` on the left two vertices to flip it. Swap `filter::linear` for `filter::nearest` and zoom in. |
 
-## Part 3 — Compute (not built yet)
+### The split that matters
+
+`Renderer.swift` builds device, queue, pipeline states, buffers and texture **once** in `init`.
+It builds command buffers and encoders **every frame** in `draw`. Creating a pipeline state
+inside `draw` is the classic Metal performance bug — it recompiles shaders 60× a second.
+
+### What this unlocks that Part 1 couldn't
+
+You own the pipeline now, so you can render *into a texture* instead of the screen and run
+another pass over the result. That's multi-pass — adjustments in pass 1, dithering in pass 2,
+with the intermediate never leaving the GPU. `colorEffect` has no way to express that.
+
+## Part 3 — Compute ✅ built
+
+Toolbar grid icon → **Compute Lab**. Code in `Compute.metal` and `ComputeLab.swift`.
 
 Docs: [Performing calculations on a GPU](https://developer.apple.com/documentation/metal/performing-calculations-on-a-gpu) ·
 [Processing a texture in a compute function](https://developer.apple.com/documentation/metal/hello_compute)
 
-- **13** — `MTLComputeCommandEncoder`, threadgroups, `threadgroup` memory, arbitrary writes.
-  Worked example: bit-packing to ESC/POS (`ImageProcessor.convertToESCPOS`).
-- **14** — The wavefront / diagonal-sweep trick that genuinely does parallelise error diffusion —
-  and an honest look at whether it's worth it at 384px wide.
+| Step | Teaches | Try changing |
+|---|---|---|
+| 13 · Bayer (compute) | `MTLComputeCommandEncoder`, `[[thread_position_in_grid]]`, threadgroup sizing from `threadExecutionWidth`. Same maths as the colorEffect version — per-pixel work ports over unchanged. | Hardcode `threadsPerThreadgroup` to 32×32 and watch pipeline creation fail on the limit. |
+| 13 · ESC/POS packing | One thread produces one output **byte** from 8 input pixels — the grid is shaped like the *output*. Impossible in render, where the grid is always one-invocation-per-pixel-drawn. | Flip `1 << bit` to `1 << (7 - bit)` for MSB-first printers. |
+| 14 · Atkinson wavefront | Error diffusion **on the GPU**, via `k = x + 4y` scheduling and a `.serial` encoder. | Change `4` to `2` in both the kernel and the host loop. Output still looks plausible but goes non-deterministic — that's the race. |
+
+### Why k = x + 4y
+
+Pixel (x,y) pushes error into six neighbours, so it must run after everything feeding it. Pick a
+schedule `k = x + b·y` where every pixel depends only on smaller k. The six sources of a target sit
+at k offsets `-1, -2, (1-b), -b, (-1-b), -2b`:
+
+- `b=1` → `-1,-2,0,-1,-2,-2` — a `0` means a dependency inside the same wavefront ✗
+- `b=2` → `-1,-2,-1,-2,-3,-4` — duplicates: two pixels in one wavefront write the same cell ✗
+- `b=3` → `-1,-2,-2,-3,-4,-6` — still duplicated ✗
+- `b=4` → `-1,-2,-3,-4,-5,-8` — all distinct ✓ no atomics needed
+
+### Measured (384×384, simulator)
+
+| | Release | Debug |
+|---|---|---|
+| CPU, scan order | **1.7 ms** | 71.7 ms |
+| GPU, 1,916 wavefronts | **18.9 ms** | 16.5 ms |
+
+Two conclusions, and the second one bit me while building this:
+
+1. **The GPU loses by ~11×.** Each wavefront is a sync point; at 384px the synchronisation costs
+   far more than the parallel arithmetic saves. Wavefront Atkinson is a correctness demo, not an
+   optimisation — the CPU version in `ImageProcessor` is the right choice for this app.
+2. **Benchmark in Release.** In Debug the CPU looked 42× slower than it is, and the GPU appeared to
+   *win* by 4×. Unoptimised Swift bounds-checks every array access. Same code, opposite conclusion.
+
+Output is **bit-identical** between CPU and GPU — compare the ESC/POS hex rows. The schedule is
+exact, not an approximation.
 
 ---
 
