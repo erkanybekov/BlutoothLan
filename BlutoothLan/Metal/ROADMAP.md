@@ -105,6 +105,124 @@ exact, not an approximation.
 
 ---
 
+## Part 4 — the things Parts 2 and 3 cut corners on ✅ built
+
+Folded into the existing labs rather than a new one, so the code you already had became correct.
+All three labs now live behind the toolbar wand icon → **Metal**.
+
+| Step | Where | Teaches | Try changing |
+|---|---|---|---|
+| 15 · 3D cube | Metal Lab | `MTLVertexDescriptor` + `[[stage_in]]` instead of a raw `constant Vertex*`; an index buffer (8 corners → 36 triangle vertices); a depth buffer + `MTLDepthStencilState`; MVP matrices. | Flip **Depth testing** off — the cube falls apart, back faces drawn over front. |
+| 16 · Multi-pass | Metal Lab | Pass 1 renders into an **offscreen texture** you allocate (`usage: [.renderTarget, .shaderRead]`); pass 2 reads it and draws to the drawable. Two encoders, one command buffer. | Set pass 1's `storeAction` to `.dontCare` and watch pass 2 read garbage. |
+| — · Private storage | Compute Lab | Every working buffer is `.storageModePrivate` — GPU-only. Reading results back needs `MTLBlitCommandEncoder`, the third encoder type. | Call `.contents()` on a private buffer: garbage, not an error. |
+| — · Non-blocking submit | Compute Lab | `addCompletedHandler` + async/await replaces `waitUntilCompleted()`, which parks the calling thread until the GPU finishes. In a render loop that's a dropped frame. | — |
+| 19 · Threadgroup reduction | Compute Lab | `threadgroup` shared memory + `threadgroup_barrier`. Tree reduction: 256 → 128 → … → 1 in 8 rounds instead of 256 sequential adds. | Delete the barrier inside the loop. The answer changes between runs. |
+
+### Two bugs worth keeping
+
+**`setDepthStencilState(nil)` aborts the Metal simulator** — `Invalid depth stencil state`. "Depth
+off" has to be a real object: `depthCompareFunction = .always`, `isDepthWriteEnabled = false`. The
+nil version looks equivalent and isn't.
+
+**Multiple `NavigationLink`s in a legacy `NavigationView` toolbar activate the wrong destination.**
+Same family as two hidden `isActive` links pushing a blank screen. Fixed by collapsing to a single
+link into `MetalLabsView`, where a `List` handles them correctly.
+
+### Reduction result
+
+```
+GPU mean luma  0.449828
+CPU mean luma  0.449636
+576 groups × 256 threads, 8 rounds each
+```
+
+They differ in the 4th decimal because of summation order — and the **GPU is the more accurate
+one**. Pairwise tree summation accumulates less float error than a sequential loop over 147,456
+values.
+
+### Still not covered
+
+Blending, face culling, MSAA, argument buffers, indirect command buffers, ray tracing, Metal
+Performance Shaders, the Metal debugger / frame capture — and **Metal 4**, which is what Apple's
+Essentials docs now lead with and whose command model differs from everything here.
+
+---
+
+## Part 5 — bug fixes + the rest ✅ built
+
+Start at **Capabilities** (top of the Metal list). Most of Part 5 is device-dependent, and that
+screen is the ground truth for what your hardware actually does.
+
+### Bugs fixed
+
+| Was | Why it mattered |
+|---|---|
+| `@State private var lab = ComputeLab()` | SwiftUI evaluates a `@State` default on **every** View init — this rebuilt 5 pipelines and reloaded a texture each time, then discarded them. Exactly the mistake these labs teach against. Now lazy in `.task`. |
+| `angle += 0.01` | Frame-rate dependent; twice as fast on 120 Hz. Now driven by a `CACurrentMediaTime()` delta. |
+| MTKView pinned to 60 fps | Static stages redrew constantly. Now `isPaused` + `enableSetNeedsDisplay` for everything but the cube. |
+| `TimelineView(.animation)` on all effects | Only the ripple needs a clock. |
+
+### New
+
+| Step | Where | Teaches |
+|---|---|---|
+| Capabilities | own screen | `supportsRaytracing`, GPU family, argument-buffer tier, `MPSSupportsMTLDevice`, Metal 4. Ask before you use. |
+| 20 · Blending | Metal Lab | Blending is **pipeline state**, so each mode is its own PSO. Alpha vs additive vs off. |
+| 21 · Culling | Metal Lab (cube) | `setCullMode` is an **encoder** setting, unlike blending. A different mechanism from depth — culling discards by winding before rasterisation; depth resolves what's in front. |
+| 22 · MSAA | Metal Lab | Sample count is baked into the view *and* every pipeline used with it, so they must agree — hence a pipeline per count. |
+| 23 · Argument buffer | Metal Lab | Texture + sampler + uniform in one struct, bound once. `useResource()` is mandatory: Metal can't see through the buffer to know the texture is live. |
+| 25 · MPS | own lab | `MPSImageGaussianBlur` vs a naive hand-written kernel. |
+| 26 · Ray tracing | own lab | `MTLPrimitiveAccelerationStructure`, `MTLAccelerationStructureCommandEncoder`, `ray_query` in a compute kernel. |
+| 27 · Metal 4 | own lab | `MTL4CommandQueue`, `MTL4CommandAllocator`, `MTL4ArgumentTable`. |
+
+### What this M1 simulator actually reports
+
+```
+Ray tracing (API)     no          Argument buffers   tier 1
+RT hardware (apple9)  no          MPS                yes
+Highest GPU family    unknown     Metal 4            absent from sim SDK
+```
+
+**Metal 4 needs a compile-time `#if`, not `@available`.** The `MTL4*` types don't exist in the iOS
+Simulator SDK at all, so the code won't compile there — verified by type-checking the same file
+against `iphonesimulator` (fails) and `iphoneos` (succeeds).
+
+### Verification status — honest
+
+| Feature | Simulator | Notes |
+|---|---|---|
+| All four bug fixes | ✅ verified | |
+| Capabilities | ✅ verified | |
+| 20 · Blending | ✅ verified | alpha blending visible |
+| 21 · Culling | ✅ builds | toggle present; pairs with depth |
+| 22 · MSAA | ✅ verified | thin sliver, clean edges |
+| 23 · Argument buffer | ❌ **device-only** | tier 1 here → command buffer aborts (error 3) |
+| 25 · MPS | ✅ verified | 1.59 ms vs 1.46 ms hand-written |
+| 26 · Ray tracing | ❌ **device-only** | `supportsRaytracing == false` |
+| 27 · Metal 4 | ❌ **device-only** | absent from simulator SDK |
+
+Device-only items **compile clean for `generic/platform=iOS`** but have not been run. Treat them as
+unverified until you launch on your iPhone.
+
+### The MPS benchmark trap
+
+First measurement said MPS 64.68 ms vs hand-written 1.63 ms — MPS 40× *slower*. That was a
+measurement bug: `MPSImageGaussianBlur(device:sigma:)` was being constructed inside the timed
+region, and MPS compiles its kernels lazily on first use. Moving construction out and adding a
+warm-up pass gives **1.59 ms vs 1.46 ms**.
+
+Two lessons, both general: exclude one-time setup from benchmarks, and warm up before measuring.
+At 384px on a simulator both are dominated by command-buffer overhead, so MPS's algorithmic
+advantage doesn't show — re-run on device with a larger image.
+
+### Still not covered
+
+Indirect command buffers, frame capture (`MTLCaptureManager` needs `MetalCaptureEnabled` in
+Info.plist, which is outside `Metal/` — raise it if you want it), tile shaders, mesh shaders,
+sparse textures, and the machine-learning encoders new in Metal 4.
+
+---
+
 ## Reference
 
 - [Metal Shading Language Spec](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf) — lookup, not reading

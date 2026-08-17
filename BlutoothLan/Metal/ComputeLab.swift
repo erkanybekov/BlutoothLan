@@ -2,14 +2,23 @@
 //  ComputeLab.swift
 //  BlutoothLan
 //
-//  Part 3 host side. A compute pass is simpler than a render pass — there's no
-//  drawable, no render pass descriptor, no vertices:
+//  Part 3 host side, upgraded in Part 4.
+//
+//  A compute pass is simpler than a render pass — no drawable, no render pass
+//  descriptor, no vertices:
 //
 //      command buffer → MTLComputeCommandEncoder → setComputePipelineState
 //                     → bind buffers/textures → dispatchThreads → endEncoding
 //
-//  Everything here runs on demand, not per frame, because step 14 is slow
-//  enough that you'd notice.
+//  PART 4 CHANGES:
+//
+//  1. Working buffers are .storageModePrivate — GPU-only memory the CPU can't
+//     touch. Faster, and the honest default for data the CPU never reads.
+//     Getting results back needs a THIRD encoder type: MTLBlitCommandEncoder.
+//
+//  2. No more waitUntilCompleted(). That blocks the calling thread until the
+//     GPU finishes. Real apps use addCompletedHandler and never block; here
+//     that's wrapped in async/await.
 //
 
 import Metal
@@ -17,15 +26,17 @@ import MetalKit
 import UIKit
 
 struct ComputeResult {
-    let image: UIImage
+    let image: UIImage?
     let milliseconds: Double
-    let escposPreview: [UInt8]      // first bytes of the printer payload
+    let escposPreview: [UInt8]
     let dispatchCount: Int
+    let note: String?
 }
 
 final class ComputeLab {
 
-    // Built once.
+    // MARK: - Built once
+
     private let device: MTLDevice
     private let queue: MTLCommandQueue
 
@@ -33,10 +44,12 @@ final class ComputeLab {
     private let bayerPipeline: MTLComputePipelineState
     private let atkinsonPipeline: MTLComputePipelineState
     private let packPipeline: MTLComputePipelineState
+    private let reducePipeline: MTLComputePipelineState
 
     private let sourceTexture: MTLTexture
     let width: Int
     let height: Int
+    private var pixelCount: Int { width * height }
     private var bytesPerRow: Int { (width + 7) / 8 }
 
     init?(side: Int = 384) {
@@ -53,7 +66,8 @@ final class ComputeLab {
         guard let gray = pipeline("textureToGray"),
               let bayer = pipeline("bayerCompute"),
               let atkinson = pipeline("atkinsonWavefront"),
-              let pack = pipeline("packToESCPOS")
+              let pack = pipeline("packToESCPOS"),
+              let reduce = pipeline("reduceSum")
         else { return nil }
 
         guard let cgImage = ComputeLab.makeTestImage(side: CGFloat(side)).cgImage,
@@ -67,18 +81,59 @@ final class ComputeLab {
         self.bayerPipeline = bayer
         self.atkinsonPipeline = atkinson
         self.packPipeline = pack
+        self.reducePipeline = reduce
         self.sourceTexture = texture
         self.width = texture.width
         self.height = texture.height
     }
 
+    // MARK: - Non-blocking submission
+
+    /// The Part 4 fix. `waitUntilCompleted()` parks the calling thread until the
+    /// GPU is done; in a render loop that's a dropped frame. `addCompletedHandler`
+    /// hands control back immediately and calls you later — here bridged to
+    /// async/await so the call site still reads top to bottom.
+    private func submit(_ commandBuffer: MTLCommandBuffer) async {
+        await withCheckedContinuation { continuation in
+            commandBuffer.addCompletedHandler { _ in continuation.resume() }
+            commandBuffer.commit()
+        }
+    }
+
+    private func dispatch2D(_ encoder: MTLComputeCommandEncoder,
+                            pipeline: MTLComputePipelineState,
+                            width: Int, height: Int) {
+        let w = pipeline.threadExecutionWidth
+        let h = max(1, pipeline.maxTotalThreadsPerThreadgroup / w)
+        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
+    }
+
+    /// GPU-only memory. The CPU literally cannot read or write this pointer —
+    /// which is why every readback below needs a blit.
+    private func makePrivateBuffer(length: Int) -> MTLBuffer? {
+        device.makeBuffer(length: length, options: .storageModePrivate)
+    }
+
+    /// Copies device-private memory into CPU-visible memory using a blit
+    /// encoder — the third encoder type, alongside render and compute.
+    private func blitToShared(_ source: MTLBuffer, length: Int) async -> MTLBuffer? {
+        guard let staging = device.makeBuffer(length: length, options: .storageModeShared),
+              let commandBuffer = queue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder()
+        else { return nil }
+
+        blit.copy(from: source, sourceOffset: 0,
+                  to: staging, destinationOffset: 0, size: length)
+        blit.endEncoding()
+        await submit(commandBuffer)
+        return staging
+    }
+
     // MARK: - Shared setup
 
-    /// Runs textureToGray and returns a shared buffer of 0…1 luma.
-    private func makeGrayBuffer() -> MTLBuffer? {
-        let count = width * height
-        guard let buffer = device.makeBuffer(length: count * MemoryLayout<Float>.stride,
-                                             options: .storageModeShared),
+    private func makeGrayBuffer() async -> MTLBuffer? {
+        guard let buffer = makePrivateBuffer(length: pixelCount * MemoryLayout<Float>.stride),
               let commandBuffer = queue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return nil }
@@ -91,28 +146,16 @@ final class ComputeLab {
 
         dispatch2D(encoder, pipeline: grayPipeline, width: width, height: height)
         encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        await submit(commandBuffer)
 
         return buffer
     }
 
-    /// Threadgroup sizing straight from the pipeline's own limits — never
-    /// hardcode 16x16 and hope.
-    private func dispatch2D(_ encoder: MTLComputeCommandEncoder,
-                            pipeline: MTLComputePipelineState,
-                            width: Int, height: Int) {
-        let w = pipeline.threadExecutionWidth
-        let h = max(1, pipeline.maxTotalThreadsPerThreadgroup / w)
-        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
-                                threadsPerThreadgroup: MTLSize(width: w, height: h, depth: 1))
-    }
-
     // MARK: - Step 13 · Bayer on compute
 
-    func runBayer() -> ComputeResult? {
-        guard let grayBuffer = makeGrayBuffer(),
-              let bits = device.makeBuffer(length: width * height, options: .storageModeShared)
+    func runBayer() async -> ComputeResult? {
+        guard let gray = await makeGrayBuffer(),
+              let bits = makePrivateBuffer(length: pixelCount)
         else { return nil }
 
         let start = CFAbsoluteTimeGetCurrent()
@@ -122,37 +165,34 @@ final class ComputeLab {
         else { return nil }
 
         encoder.setComputePipelineState(bayerPipeline)
-        encoder.setBuffer(grayBuffer, offset: 0, index: 0)
+        encoder.setBuffer(gray, offset: 0, index: 0)
         encoder.setBuffer(bits, offset: 0, index: 1)
         var size = SIMD2<Int32>(Int32(width), Int32(height))
         encoder.setBytes(&size, length: MemoryLayout<SIMD2<Int32>>.size, index: 2)
         dispatch2D(encoder, pipeline: bayerPipeline, width: width, height: height)
         encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        await submit(commandBuffer)
 
         let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
-
-        return finish(bits: bits, milliseconds: ms, dispatchCount: 1)
+        return await finish(bits: bits, milliseconds: ms, dispatchCount: 1, note: nil)
     }
 
     // MARK: - Step 14 · Atkinson wavefront
 
-    func runAtkinsonGPU(threshold: Float = 0.5) -> ComputeResult? {
-        guard let grayBuffer = makeGrayBuffer(),
-              let bits = device.makeBuffer(length: width * height, options: .storageModeShared)
+    func runAtkinsonGPU(threshold: Float = 0.5) async -> ComputeResult? {
+        guard let gray = await makeGrayBuffer(),
+              let bits = makePrivateBuffer(length: pixelCount)
         else { return nil }
 
         let start = CFAbsoluteTimeGetCurrent()
 
         // A serial encoder guarantees dispatch N finishes before N+1 starts.
-        // Without this, wavefronts would overlap and the dependency chain breaks.
         guard let commandBuffer = queue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder(dispatchType: .serial)
         else { return nil }
 
         encoder.setComputePipelineState(atkinsonPipeline)
-        encoder.setBuffer(grayBuffer, offset: 0, index: 0)
+        encoder.setBuffer(gray, offset: 0, index: 0)
         encoder.setBuffer(bits, offset: 0, index: 1)
         var size = SIMD2<Int32>(Int32(width), Int32(height))
         encoder.setBytes(&size, length: MemoryLayout<SIMD2<Int32>>.size, index: 2)
@@ -163,9 +203,7 @@ final class ComputeLab {
         let maxK = (width - 1) + 4 * (height - 1)
         var dispatches = 0
 
-        // k = x + 4y. Walk k upward; every pixel on a given k is independent.
         for k in 0...maxK {
-            // x = k - 4y must land inside [0, width) and y inside [0, height).
             let yMin = max(0, Int(ceil(Double(k - width + 1) / 4.0)))
             let yMax = min(height - 1, k / 4)
             if yMin > yMax { continue }
@@ -182,25 +220,25 @@ final class ComputeLab {
         }
 
         encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        await submit(commandBuffer)
 
         let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
-
-        return finish(bits: bits, milliseconds: ms, dispatchCount: dispatches)
+        return await finish(bits: bits, milliseconds: ms, dispatchCount: dispatches, note: nil)
     }
 
     // MARK: - CPU reference
 
-    /// Same algorithm, plain scan order — this is what ImageProcessor does.
-    func runAtkinsonCPU(threshold: Float = 0.5) -> ComputeResult? {
-        guard let grayBuffer = makeGrayBuffer() else { return nil }
+    func runAtkinsonCPU(threshold: Float = 0.5) async -> ComputeResult? {
+        guard let grayPrivate = await makeGrayBuffer(),
+              let grayShared = await blitToShared(grayPrivate,
+                                                  length: pixelCount * MemoryLayout<Float>.stride)
+        else { return nil }
 
         let start = CFAbsoluteTimeGetCurrent()
 
         let w = width, h = height
         var gray = [Float](repeating: 0, count: w * h)
-        memcpy(&gray, grayBuffer.contents(), w * h * MemoryLayout<Float>.stride)
+        memcpy(&gray, grayShared.contents(), w * h * MemoryLayout<Float>.stride)
         var bits = [UInt8](repeating: 0, count: w * h)
 
         for y in 0..<h {
@@ -226,17 +264,86 @@ final class ComputeLab {
 
         let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
 
-        guard let buffer = device.makeBuffer(bytes: bits, length: w * h, options: .storageModeShared)
+        guard let buffer = device.makeBuffer(bytes: bits, length: w * h,
+                                             options: .storageModeShared)
         else { return nil }
-        return finish(bits: buffer, milliseconds: ms, dispatchCount: 0)
+        return await finish(bits: buffer, milliseconds: ms, dispatchCount: 0, note: nil)
+    }
+
+    // MARK: - Step 19 · Threadgroup reduction
+
+    /// Mean luminance via tree reduction in threadgroup memory, checked against
+    /// a plain CPU sum.
+    func runReduction() async -> ComputeResult? {
+        guard let gray = await makeGrayBuffer() else { return nil }
+
+        let threadsPerGroup = min(256, reducePipeline.maxTotalThreadsPerThreadgroup)
+        let groups = (pixelCount + threadsPerGroup - 1) / threadsPerGroup
+
+        guard let partials = makePrivateBuffer(length: groups * MemoryLayout<Float>.stride)
+        else { return nil }
+
+        let start = CFAbsoluteTimeGetCurrent()
+
+        guard let commandBuffer = queue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder()
+        else { return nil }
+
+        encoder.setComputePipelineState(reducePipeline)
+        encoder.setBuffer(gray, offset: 0, index: 0)
+        encoder.setBuffer(partials, offset: 0, index: 1)
+        var count = Int32(pixelCount)
+        encoder.setBytes(&count, length: MemoryLayout<Int32>.size, index: 2)
+
+        // dispatchThreadgroups, not dispatchThreads: the reduction needs whole,
+        // uniformly sized groups because it indexes threadgroup memory directly.
+        encoder.dispatchThreadgroups(
+            MTLSize(width: groups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: threadsPerGroup, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        await submit(commandBuffer)
+
+        guard let staged = await blitToShared(partials,
+                                              length: groups * MemoryLayout<Float>.stride)
+        else { return nil }
+
+        let ptr = staged.contents().bindMemory(to: Float.self, capacity: groups)
+        var total: Float = 0
+        for i in 0..<groups { total += ptr[i] }
+        let gpuMean = total / Float(pixelCount)
+        let ms = (CFAbsoluteTimeGetCurrent() - start) * 1000
+
+        // CPU check.
+        guard let grayShared = await blitToShared(gray,
+                                                  length: pixelCount * MemoryLayout<Float>.stride)
+        else { return nil }
+        let gptr = grayShared.contents().bindMemory(to: Float.self, capacity: pixelCount)
+        var cpuTotal: Float = 0
+        for i in 0..<pixelCount { cpuTotal += gptr[i] }
+        let cpuMean = cpuTotal / Float(pixelCount)
+
+        let note = String(
+            format: """
+            GPU mean luma  %.6f
+            CPU mean luma  %.6f
+            %d groups × %d threads, %d rounds each
+            """,
+            gpuMean, cpuMean, groups, threadsPerGroup,
+            Int(log2(Double(threadsPerGroup)))
+        )
+
+        return ComputeResult(image: nil, milliseconds: ms,
+                             escposPreview: [], dispatchCount: 1, note: note)
     }
 
     // MARK: - Output
 
-    /// Packs to ESC/POS on the GPU, then builds a preview image on the CPU.
-    private func finish(bits: MTLBuffer, milliseconds: Double, dispatchCount: Int) -> ComputeResult? {
-        guard let packed = device.makeBuffer(length: bytesPerRow * height,
-                                             options: .storageModeShared),
+    private func finish(bits: MTLBuffer,
+                        milliseconds: Double,
+                        dispatchCount: Int,
+                        note: String?) async -> ComputeResult? {
+        guard let packed = makePrivateBuffer(length: bytesPerRow * height),
               let commandBuffer = queue.makeCommandBuffer(),
               let encoder = commandBuffer.makeComputeCommandEncoder()
         else { return nil }
@@ -251,21 +358,23 @@ final class ComputeLab {
 
         dispatch2D(encoder, pipeline: packPipeline, width: bytesPerRow, height: height)
         encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        await submit(commandBuffer)
 
-        let bitPtr = bits.contents().bindMemory(to: UInt8.self, capacity: width * height)
-        var pixels = [UInt8](repeating: 0, count: width * height)
-        for i in 0..<(width * height) {
+        // Both readbacks go through a blit — the buffers above are GPU-private.
+        guard let bitsStaged = await blitToShared(bits, length: pixelCount),
+              let packedStaged = await blitToShared(packed, length: bytesPerRow * height)
+        else { return nil }
+
+        let bitPtr = bitsStaged.contents().bindMemory(to: UInt8.self, capacity: pixelCount)
+        var pixels = [UInt8](repeating: 0, count: pixelCount)
+        for i in 0..<pixelCount {
             pixels[i] = bitPtr[i] != 0 ? 0 : 255      // 1 = black
         }
 
-        guard let image = ComputeLab.makeImage(from: pixels, width: width, height: height)
-        else { return nil }
+        let image = ComputeLab.makeImage(from: pixels, width: width, height: height)
 
-        let packedPtr = packed.contents().bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
-        // Row 0 is the white corner of the test image — all-zero bits and a dull
-        // preview. Sample the middle row, where there's actually content.
+        let packedPtr = packedStaged.contents().bindMemory(to: UInt8.self,
+                                                           capacity: bytesPerRow * height)
         let rowStart = (height / 2) * bytesPerRow
         let previewCount = min(12, bytesPerRow)
         let preview = (0..<previewCount).map { packedPtr[rowStart + $0] }
@@ -273,12 +382,12 @@ final class ComputeLab {
         return ComputeResult(image: image,
                              milliseconds: milliseconds,
                              escposPreview: preview,
-                             dispatchCount: dispatchCount)
+                             dispatchCount: dispatchCount,
+                             note: note)
     }
 
     private static func makeImage(from pixels: [UInt8], width: Int, height: Int) -> UIImage? {
-        var data = pixels
-        guard let provider = CGDataProvider(data: Data(data) as CFData),
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
               let cgImage = CGImage(width: width,
                                     height: height,
                                     bitsPerComponent: 8,
@@ -291,7 +400,6 @@ final class ComputeLab {
                                     shouldInterpolate: false,
                                     intent: .defaultIntent)
         else { return nil }
-        _ = data.count
         return UIImage(cgImage: cgImage)
     }
 

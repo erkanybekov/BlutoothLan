@@ -2,21 +2,29 @@
 //  ComputeLabView.swift
 //  BlutoothLan
 //
-//  Part 3 UI. Run each method, compare the output and the clock.
+//  Part 3 + 4 UI. Run each method, compare the output and the clock.
 //
 
 import SwiftUI
 
 struct ComputeLabView: View {
-    @State private var lab = ComputeLab()
+    // NOT `= ComputeLab()`. SwiftUI evaluates a @State default expression on
+    // EVERY View init, not just the first — so that form rebuilt five compute
+    // pipelines and reloaded a texture each time, then threw them away. Exactly
+    // the "build once, not per frame" rule these labs are about.
+    @State private var lab: ComputeLab?
+    @State private var labLoaded = false
     @State private var result: ComputeResult?
     @State private var label: String = ""
     @State private var running = false
+    @State private var failed = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                if lab == nil {
+                if !labLoaded {
+                    ProgressView().frame(height: 300)
+                } else if lab == nil {
                     Text("No Metal device available.")
                         .foregroundStyle(.red)
                 } else {
@@ -24,6 +32,10 @@ struct ComputeLabView: View {
                     buttons
                     if let result {
                         stats(result)
+                    } else if failed {
+                        Text("\(label) returned nil — a pipeline, buffer or encoder failed to create.")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                     }
                     notes
                 }
@@ -32,6 +44,12 @@ struct ComputeLabView: View {
         }
         .navigationTitle("Compute Lab")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            // Runs once per appearance instead of once per View struct init.
+            guard !labLoaded else { return }
+            lab = ComputeLab()
+            labLoaded = true
+        }
     }
 
     private var imagePanel: some View {
@@ -54,13 +72,16 @@ struct ComputeLabView: View {
     private var buttons: some View {
         VStack(spacing: 8) {
             Button("13 · Bayer (compute)") {
-                run("Bayer · compute") { $0.runBayer() }
+                run("Bayer · compute") { await $0.runBayer() }
             }
             Button("14 · Atkinson — GPU wavefront") {
-                run("Atkinson · GPU wavefront") { $0.runAtkinsonGPU() }
+                run("Atkinson · GPU wavefront") { await $0.runAtkinsonGPU() }
             }
             Button("14 · Atkinson — CPU scan order") {
-                run("Atkinson · CPU") { $0.runAtkinsonCPU() }
+                run("Atkinson · CPU") { await $0.runAtkinsonCPU() }
+            }
+            Button("19 · Threadgroup reduction") {
+                run("Parallel reduction") { await $0.runReduction() }
             }
         }
         .buttonStyle(.bordered)
@@ -83,12 +104,19 @@ struct ComputeLabView: View {
                     Text("\(r.dispatchCount)").monospacedDigit()
                 }
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text("ESC/POS bytes").foregroundStyle(.secondary)
-                Text(r.escposPreview.map { String(format: "%02X", $0) }.joined(separator: " "))
-                    .font(.caption.monospaced())
+            if !r.escposPreview.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ESC/POS bytes").foregroundStyle(.secondary)
+                    Text(r.escposPreview.map { String(format: "%02X", $0) }.joined(separator: " "))
+                        .font(.caption.monospaced())
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if let note = r.note {
+                Text(note)
+                    .font(.caption.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .font(.subheadline)
     }
@@ -101,20 +129,24 @@ struct ComputeLabView: View {
 
             Text("In a DEBUG build the same code measured CPU 71.7 ms and the GPU appeared to win by 4×. Unoptimised Swift bounds-checks every array access. Benchmark in Release or you'll draw the opposite conclusion.")
                 .foregroundStyle(.orange)
+
+            Text("Part 4: every working buffer here is .storageModePrivate, read back through a blit encoder, and submitted with addCompletedHandler instead of waitUntilCompleted — so no call blocks a thread on the GPU.")
         }
         .font(.footnote)
         .multilineTextAlignment(.leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func run(_ name: String, _ work: @escaping (ComputeLab) -> ComputeResult?) {
+    private func run(_ name: String,
+                     _ work: @escaping (ComputeLab) async -> ComputeResult?) {
         guard let lab else { return }
         running = true
         label = name
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = work(lab)
-            DispatchQueue.main.async {
+        Task {
+            let r = await work(lab)
+            await MainActor.run {
                 result = r
+                failed = (r == nil)
                 running = false
             }
         }

@@ -79,21 +79,9 @@ struct ContentView: View {
                     }
 
                     NavigationLink {
-                        ShaderLabView()
+                        MetalLabsView()
                     } label: {
                         Image(systemName: "wand.and.stars")
-                    }
-
-                    NavigationLink {
-                        MetalLabView()
-                    } label: {
-                        Image(systemName: "cube.transparent")
-                    }
-
-                    NavigationLink {
-                        ComputeLabView()
-                    } label: {
-                        Image(systemName: "square.grid.3x3.fill")
                     }
                     
                     switch selectedTab {

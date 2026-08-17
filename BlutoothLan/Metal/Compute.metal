@@ -153,3 +153,77 @@ kernel void packToESCPOS(device const uchar *bits [[buffer(0)]],
     }
     out[y * bytesPerRow + byteX] = packed;
 }
+
+
+// ---------------------------------------------------------------------------
+// STEP 19 — THREADGROUP MEMORY and parallel reduction.
+//
+// Every kernel so far had threads that ignored each other. This one makes them
+// cooperate.
+//
+// `threadgroup` memory is a small, fast scratchpad SHARED by all threads in a
+// threadgroup — much faster than device memory, and invisible to other groups.
+//
+// The pattern is a tree reduction: 256 values → 128 → 64 → … → 1, halving each
+// round. log2(256) = 8 rounds instead of 256 sequential adds.
+//
+// threadgroup_barrier is mandatory. It makes every thread in the group wait
+// until all of them have finished writing. Remove it and you read values your
+// neighbours haven't written yet — the result is wrong and varies per run.
+// ---------------------------------------------------------------------------
+kernel void reduceSum(device const float *values  [[buffer(0)]],
+                      device float *partials      [[buffer(1)]],
+                      constant int &count         [[buffer(2)]],
+                      uint gid  [[thread_position_in_grid]],
+                      uint lid  [[thread_position_in_threadgroup]],
+                      uint tgid [[threadgroup_position_in_grid]],
+                      uint tgSize [[threads_per_threadgroup]]) {
+
+    threadgroup float scratch[256];
+
+    scratch[lid] = (int(gid) < count) ? values[gid] : 0.0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint stride = tgSize / 2; stride > 0; stride >>= 1) {
+        if (lid < stride) {
+            scratch[lid] += scratch[lid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // One thread per group writes that group's total.
+    if (lid == 0) {
+        partials[tgid] = scratch[0];
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// STEP 25 — a hand-written separable-ish box blur, purely so there's something
+// honest to benchmark Metal Performance Shaders against.
+//
+// This is the naive version: (2r+1)^2 texture reads per pixel, no separation
+// into two passes, no threadgroup tiling, no vectorisation. Exactly what you'd
+// write first — and what MPSImageGaussianBlur exists to beat.
+// ---------------------------------------------------------------------------
+kernel void boxBlurCompute(texture2d<float, access::read>  src [[texture(0)]],
+                           texture2d<float, access::write> dst [[texture(1)]],
+                           constant int &radius [[buffer(0)]],
+                           uint2 gid [[thread_position_in_grid]]) {
+    int w = int(src.get_width()), h = int(src.get_height());
+    if (int(gid.x) >= w || int(gid.y) >= h) { return; }
+
+    float4 sum = float4(0.0);
+    int count = 0;
+
+    for (int dy = -radius; dy <= radius; dy++) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            int x = clamp(int(gid.x) + dx, 0, w - 1);
+            int y = clamp(int(gid.y) + dy, 0, h - 1);
+            sum += src.read(uint2(x, y));
+            count++;
+        }
+    }
+
+    dst.write(sum / float(count), gid);
+}

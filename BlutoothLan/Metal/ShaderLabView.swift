@@ -62,9 +62,17 @@ struct ShaderLabView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 20) {
-                TimelineView(.animation) { timeline in
-                    let t = timeline.date.timeIntervalSince1970
-                    canvas(time: t)
+                // Only the ripple needs a clock. Wrapping every effect in
+                // TimelineView(.animation) redrew all ten at display rate to
+                // produce an identical frame.
+                Group {
+                    if effect == .ripple {
+                        TimelineView(.animation) { timeline in
+                            canvas(time: timeline.date.timeIntervalSince1970)
+                        }
+                    } else {
+                        canvas(time: 0)
+                    }
                 }
                 .frame(width: side, height: side)
                 .clipped()

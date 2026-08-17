@@ -131,3 +131,123 @@ fragment float4 quad_fragment(TexRasterizerData in [[stage_in]],
     float y = dot(c.rgb, float3(0.299, 0.587, 0.114));
     return float4(mix(c.rgb, float3(y), grayAmount), c.a);
 }
+
+
+// ===========================================================================
+// PART 4 — the things we skipped
+// ===========================================================================
+
+
+// ---------------------------------------------------------------------------
+// STAGE 15 — Vertex descriptor + index buffer + depth, via a 3D cube.
+//
+// THREE things we cut corners on earlier, all fixed here.
+//
+// 1. [[stage_in]] with [[attribute(n)]] instead of `constant Vertex *`.
+//    The CPU describes the memory layout once via MTLVertexDescriptor and the
+//    GPU unpacks it. Buffer index 0 is now owned by the descriptor, which is
+//    why the uniforms moved to buffer(1).
+//
+// 2. An index buffer. A cube has 8 corners but 36 triangle vertices. Indices
+//    let you store the 8 once and reference them 36 times.
+//
+// 3. Depth. Without a depth buffer the last triangle drawn wins, and a cube
+//    renders inside-out. See `depthState` in Renderer.swift.
+// ---------------------------------------------------------------------------
+struct CubeVertexIn {
+    float4 position [[attribute(0)]];
+    float4 color    [[attribute(1)]];
+};
+
+struct CubeUniforms {
+    float4x4 mvp;
+};
+
+vertex RasterizerData cube_vertex(CubeVertexIn in [[stage_in]],
+                                  constant CubeUniforms &u [[buffer(1)]]) {
+    RasterizerData out;
+    out.position = u.mvp * in.position;    // model → view → clip, one matrix
+    out.color    = in.color;
+    return out;
+}
+
+
+// ---------------------------------------------------------------------------
+// STAGE 16 — Multi-pass. Both fragment shaders below run over the SAME
+// full-screen quad, using quad_vertex from stage 12.
+//
+// Pass 1 renders into an offscreen texture instead of the screen.
+// Pass 2 reads that texture and renders to the drawable.
+//
+// The intermediate never leaves the GPU, and pass 2 sees the finished output
+// of pass 1 — which is exactly what a colorEffect cannot do, because it only
+// ever sees the original source pixel.
+// ---------------------------------------------------------------------------
+fragment float4 adjust_fragment(TexRasterizerData in [[stage_in]],
+                                texture2d<float> tex [[texture(0)]],
+                                constant float3 &bcg [[buffer(0)]]) {
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+
+    float3 c = tex.sample(s, in.uv).rgb;
+    c = pow(max(c, 0.0), float3(bcg.z));    // gamma
+    c = (c - 0.5) * bcg.y + 0.5;            // contrast
+    c = c + bcg.x;                          // brightness
+    return float4(clamp(c, 0.0, 1.0), 1.0);
+}
+
+constant float bayerR[16] = {
+     0.0,  8.0,  2.0, 10.0,
+    12.0,  4.0, 14.0,  6.0,
+     3.0, 11.0,  1.0,  9.0,
+    15.0,  7.0, 13.0,  5.0
+};
+
+fragment float4 dither_fragment(TexRasterizerData in [[stage_in]],
+                                texture2d<float> tex [[texture(0)]],
+                                constant float2 &size [[buffer(0)]]) {
+    // nearest, not linear: we want the exact texel pass 1 wrote, not a blend.
+    constexpr sampler s(filter::nearest, address::clamp_to_edge);
+
+    float3 c = tex.sample(s, in.uv).rgb;
+    float luma = dot(c, float3(0.299, 0.587, 0.114));
+
+    float2 px = in.uv * size;
+    int ix = int(px.x) & 3;
+    int iy = int(px.y) & 3;
+    float threshold = (bayerR[iy * 4 + ix] + 0.5) / 16.0;
+
+    float v = luma > threshold ? 1.0 : 0.0;
+    return float4(v, v, v, 1.0);
+}
+
+
+// ---------------------------------------------------------------------------
+// STAGE 23 — ARGUMENT BUFFER.
+//
+// Normally you bind resources one at a time: setFragmentTexture,
+// setFragmentSamplerState, setFragmentBytes… Each is a separate call, every
+// frame, per encoder.
+//
+// An argument buffer packs them into a single GPU-resident struct that you fill
+// in ONCE and bind with one call. The [[id(n)]] indices are the slots the CPU
+// writes into via MTLArgumentEncoder.
+//
+// The catch is residency: because the GPU reaches the texture *through* the
+// buffer, Metal can no longer infer that it's in use. You must tell it
+// explicitly with useResource(), or you get a black sample or a crash.
+//
+// This is the Tier 1 form, which works everywhere. Tier 2 devices can skip the
+// encoder and just write texture.gpuResourceID into a plain struct.
+// ---------------------------------------------------------------------------
+struct FragmentArgs {
+    texture2d<float> tex  [[id(0)]];
+    sampler          samp [[id(1)]];
+    float            gray [[id(2)]];
+};
+
+fragment float4 argbuffer_fragment(TexRasterizerData in [[stage_in]],
+                                   constant FragmentArgs &args [[buffer(0)]]) {
+    float4 c = args.tex.sample(args.samp, in.uv);
+    float y = dot(c.rgb, float3(0.299, 0.587, 0.114));
+    return float4(mix(c.rgb, float3(y), args.gray), c.a);
+}
